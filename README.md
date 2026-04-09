@@ -1,3 +1,3 @@
-# cashflow_test
+# Cashflow Game
 
-[![Open in Bolt](https://bolt.new/static/open-in-bolt.svg)](https://bolt.new/~/sb1-1ccivbd9)
+Play the game at: https://katew62.github.io/cashflow_test/
