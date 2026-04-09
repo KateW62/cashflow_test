@@ -5,6 +5,7 @@ import { Dream } from '../config/dreams';
 import { getRandomMarketEvent, MarketEvent } from '../config/marketEvents';
 import { SmartUnemploymentSystem } from './SmartUnemploymentSystem';
 import { SmartMarketSystem } from './SmartMarketSystem';
+import { getAdjustedStockPrice, applyMarketTrendsToStockPrices } from './StockMarketIntegration';
 
 export const MAX_LOAN_MULTIPLIER = 10;
 
@@ -893,8 +894,12 @@ export const buyStockShares = (state: GameState, assetId: string, sharesToBuy: n
   if (!asset || sharesToBuy <= 0) return state;
 
   const priceTag = (asset.tags || []).find(t => ['Stock', 'MYT4U', 'OK4U', 'MYJT'].includes(t)) || 'Stock';
-  const currentPrice = getMarketPrice(state, priceTag);
-  const totalCost = Math.round(sharesToBuy * currentPrice);
+  
+  // 应用市场趋势到股票价格
+  const marketSystem = new SmartMarketSystem();
+  const adjustedPrice = getAdjustedStockPrice(state, priceTag, marketSystem);
+  
+  const totalCost = Math.round(sharesToBuy * adjustedPrice);
 
   if (safeNum(state.cash) < totalCost) return state;
 
@@ -903,10 +908,10 @@ export const buyStockShares = (state: GameState, assetId: string, sharesToBuy: n
     shares: (asset.shares ?? 0) + sharesToBuy,
     cost: asset.cost + totalCost,
     downPayment: asset.downPayment + totalCost,
-    sharePrice: currentPrice,
+    sharePrice: adjustedPrice,
   };
 
-  const logEntry = addLog(state, `买入「${asset.name}」${sharesToBuy} 股 @$${currentPrice}，共 $${totalCost.toLocaleString()}`, -totalCost, 'negative');
+  const logEntry = addLog(state, `买入「${asset.name}」${sharesToBuy} 股 @$${adjustedPrice}，共 $${totalCost.toLocaleString()}`, -totalCost, 'negative');
 
   return {
     ...state,
@@ -933,7 +938,10 @@ export const sellStockShares = (state: GameState, assetId: string, sharesToSell:
   );
   
   // 如果没找到市场价，则退而求其次使用资产初始买入价（保底）
-  const currentPrice = marketPriceEntry ? marketPriceEntry.currentPrice : (asset.sharePrice || 0);
+  // 应用市场趋势调整
+  const marketSystem = new SmartMarketSystem();
+  const basePrice = marketPriceEntry ? marketPriceEntry.currentPrice : (asset.sharePrice || 0);
+  const currentPrice = marketSystem.applyTrendToPrice(basePrice, 'Stock');
   
   // 2. 计算本次卖出的总收入
   const totalRevenue = Math.round(sharesToSell * currentPrice);

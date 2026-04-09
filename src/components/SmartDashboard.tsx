@@ -3,6 +3,7 @@ import { SmartUnemploymentSystem } from '../logic/SmartUnemploymentSystem';
 import { SmartMarketSystem } from '../logic/SmartMarketSystem';
 import { GameState } from '../logic/gameTypes';
 import { StatusBadges, GameProgressIndicator, FinancialHealthQuickView } from './StatusIndicators';
+import { getAllAdjustedStockPrices } from '../logic/StockMarketIntegration';
 
 interface SmartDashboardProps {
   gameState: GameState;
@@ -16,6 +17,9 @@ export const SmartDashboard: React.FC<SmartDashboardProps> = ({ gameState }) => 
   // 获取智能系统数据
   const unemploymentSystem = new SmartUnemploymentSystem();
   const marketSystem = new SmartMarketSystem();
+  
+  // 获取调整后的股票价格
+  const adjustedStockPrices = getAllAdjustedStockPrices(gameState, marketSystem);
   
   const riskReport = unemploymentSystem.getRiskReport(gameState);
   const marketReport = marketSystem.getMarketReport();
@@ -48,6 +52,11 @@ export const SmartDashboard: React.FC<SmartDashboardProps> = ({ gameState }) => 
       {/* 市场趋势 */}
       <div className="mb-4">
         <MarketTrendIndicator report={marketReport} />
+      </div>
+      
+      {/* 股票价格 */}
+      <div className="mb-4">
+        <StockPricePanel prices={adjustedStockPrices} marketSystem={marketSystem} />
       </div>
       
       {/* 财务健康快速视图 */}
@@ -159,6 +168,83 @@ const MarketTrendIndicator: React.FC<{ report: any }> = ({ report }) => {
       )}
     </div>
   );
+};
+
+/**
+ * 股票价格面板
+ */
+const StockPricePanel: React.FC<{ prices: any[]; marketSystem: SmartMarketSystem }> = ({ 
+  prices, 
+  marketSystem 
+}) => {
+  const currentTrend = marketSystem.getCurrentTrend();
+  const trendMultiplier = currentTrend ? currentTrend.multiplier : 1;
+  
+  return (
+    <div className="bg-white rounded-lg p-3 shadow-sm border">
+      <div className="flex justify-between items-center mb-3">
+        <h4 className="text-sm font-semibold text-gray-800">📈 股票价格</h4>
+        {currentTrend && (
+          <span className={`text-xs px-2 py-1 rounded-full ${
+            trendMultiplier > 1.1 ? 'bg-green-100 text-green-800' :
+            trendMultiplier < 0.9 ? 'bg-red-100 text-red-800' :
+            'bg-blue-100 text-blue-800'
+          }`}>
+            {currentTrend.name}
+          </span>
+        )}
+      </div>
+      
+      <div className="space-y-2">
+        {prices.map((price, index) => {
+          const basePrice = getBaseStockPrice(price.tag);
+          const changePercent = basePrice ? Math.round(((price.price - basePrice) / basePrice) * 100) : 0;
+          
+          return (
+            <div key={index} className="flex justify-between items-center py-1 px-2 bg-gray-50 rounded">
+              <span className="text-sm font-medium text-gray-700">{price.tag}</span>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-bold text-gray-900">${price.price}</span>
+                {basePrice && (
+                  <span className={`text-xs px-1 py-0.5 rounded ${
+                    changePercent > 0 ? 'bg-green-100 text-green-700' :
+                    changePercent < 0 ? 'bg-red-100 text-red-700' :
+                    'bg-gray-100 text-gray-600'
+                  }`}>
+                    {changePercent > 0 ? '+' : ''}{changePercent}%
+                  </span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      
+      {currentTrend && (
+        <div className="mt-3 pt-3 border-t border-gray-200">
+          <p className="text-xs text-gray-600">
+            💡 {currentTrend.affectedCategories.includes('Stock') 
+              ? `股市受"${currentTrend.name}"影响，价格${trendMultiplier > 1 ? '上涨' : '下跌'}${Math.round(Math.abs(trendMultiplier - 1) * 100)}%`
+              : '当前市场趋势不影响股票价格'
+            }
+          </p>
+        </div>
+      )}
+    </div>
+  );
+};
+
+/**
+ * 获取股票基础价格（用于计算涨跌幅）
+ */
+const getBaseStockPrice = (tag: string): number => {
+  const basePrices: Record<string, number> = {
+    'MYT4U': 10,
+    'OK4U': 8,
+    'MYJT': 10,
+    'Stock': 10
+  };
+  return basePrices[tag] || 10;
 };
 
 /**
