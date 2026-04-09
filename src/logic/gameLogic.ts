@@ -121,16 +121,30 @@ const addLog = (
   cashChange: number,
   type: 'positive' | 'negative' | 'neutral' = 'neutral'
 ): ActionLogEntry => {
-  const { passiveIncome, monthlyCashFlow } = calculateFinancials(state);
+  // 避免循环调用，直接计算基础财务数据
+  const safeChildren = safeNum(state.children);
+  const safeProfessionData = state.professionData ?? {
+    salary: 0, tax: 0, mortgage: 0, studentLoan: 0, otherExpenses: 0, childExpense: 0,
+  };
+  
+  // 简单计算被动收入，避免递归
+  const passiveIncome = (state.assets || []).reduce((sum, asset) => {
+    return sum + safeNum(asset?.monthlyIncome, 0);
+  }, 0);
+  
+  const salary = safeNum(safeProfessionData.salary);
+  const totalIncome = salary + passiveIncome;
+  const monthlyCashFlow = totalIncome - safeNum(safeProfessionData.mortgage) - safeNum(safeProfessionData.otherExpenses);
+  
   return {
     id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
     step: state.actionStep,
     message,
     cashChange,
-    cashFlow: monthlyCashFlow,
-    passiveIncome,
     type,
     timestamp: new Date().toISOString(),
+    passiveIncome,
+    monthlyCashFlow,
   };
 };
 
@@ -140,11 +154,11 @@ export const calculateFinancials = (state: GameState) => {
   const safeMortgageMultiplier = safeNum(state.mortgageMultiplier, 1.0) || 1.0;
 
   const passiveIncome = (state.assets || []).reduce((sum, asset) => {
-    return sum + safeNum(asset.monthlyIncome);
+    return sum + safeNum(asset?.monthlyIncome, 0);
   }, 0);
 
   const loanInterest = (state.loans || []).reduce((sum, loan) => {
-    return sum + safeNum(loan.monthlyInterest);
+    return sum + safeNum(loan?.monthlyInterest, 0);
   }, 0);
 
   const safeProfessionData = state.professionData ?? {
@@ -164,7 +178,7 @@ export const calculateFinancials = (state: GameState) => {
   const monthlyCashFlow = totalIncome - totalExpenses;
   const safeCash = safeNum(state.cash);
 
-  const totalLoans = (state.loans || []).reduce((sum, loan) => sum + safeNum(loan.amount), 0);
+  const totalLoans = (state.loans || []).reduce((sum, loan) => sum + safeNum(loan?.amount, 0), 0);
   const weeklyCashFlow = monthlyCashFlow;
   const maxLoanAllowed = Math.max(0, weeklyCashFlow * MAX_LOAN_MULTIPLIER);
   const isOverLeveraged = maxLoanAllowed > 0 && totalLoans > maxLoanAllowed;
@@ -531,8 +545,13 @@ case 'Market': {
 };
 
 export const canBuyOpportunity = (state: GameState): boolean => {
-  const { isOverLeveraged } = calculateFinancials(state);
-  return !isOverLeveraged;
+  try {
+    const { isOverLeveraged } = calculateFinancials(state);
+    return !isOverLeveraged;
+  } catch (error) {
+    console.error('Error in canBuyOpportunity:', error);
+    return false; // 出错时默认不允许购买
+  }
 };
 
 export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCard): GameState => {
@@ -551,20 +570,21 @@ export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCa
   const isStock = (card.tags || []).some(t => t.toLowerCase() === 'stock');
   const stockData = (card as SmallDealCard).stockData;
 
+  // 确保所有必需的属性都有值
   const newAsset: Asset = {
     id: `asset_${Date.now()}`,
-    name: card.name,
-    category: card.category,
-    subtype: card.subtype,
+    name: card.name || 'Unknown Asset',
+    category: card.category || 'real_estate',
+    subtype: card.subtype || 'Income',
     tags: [...(card.tags || [])],
     cost: safeNum(card.totalCost),
     downPayment: safeDownPayment,
-    // 关键修正：将卡片的月度收益转换为周度收益存入资产
-    weeklyIncome: safeNum(card.monthlyIncome) / 3, 
+    weeklyIncome: safeNum(card.monthlyIncome, 0) / 4, // 月收益转周收益
     purchaseDate: new Date().toISOString(),
     ...(isStock && stockData ? {
-      shares: stockData.shares,
-      sharePrice: stockData.sharePrice,
+      symbol: card.symbol || card.name,
+      shares: stockData.shares || 0,
+      sharePrice: stockData.sharePrice || 0,
     } : {}),
   };
 

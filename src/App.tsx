@@ -157,28 +157,35 @@ function App() {
 
   const onBuyOpportunity = () => {
     if (!gameState || !gameState.currentEvent) return;
-    if (!canBuyOpportunity(gameState)) return;
-    const card = gameState.currentEvent as SmallDealCard | BigDealCard;
-    const isStockCard = (card.tags || []).some(t => t.toLowerCase() === 'stock');
+    
+    try {
+      if (!canBuyOpportunity(gameState)) return;
+      const card = gameState.currentEvent as SmallDealCard | BigDealCard;
+      const isStockCard = (card.tags || []).some(t => t.toLowerCase() === 'stock');
 
-    if (isStockCard) {
-      const qty = parseInt(stockBuyQty) || 0;
-      if (qty <= 0) return;
-      const stockData = (card as SmallDealCard).stockData;
-      const pricePerShare = stockData?.sharePrice ?? card.totalCost;
-      const totalCost = qty * pricePerShare;
-      if (gameState.cash < totalCost) return;
+      if (isStockCard) {
+        const qty = parseInt(stockBuyQty) || 0;
+        if (qty <= 0) return;
+        const stockData = (card as SmallDealCard).stockData;
+        const pricePerShare = stockData?.sharePrice ?? card.totalCost;
+        const totalCost = qty * pricePerShare;
+        if (gameState.cash < totalCost) return;
 
-      const newState = buyOpportunity(gameState, { ...card, totalCost, downPayment: totalCost, stockData: { ...(stockData ?? { sharePrice: pricePerShare, priceRange: { min: 1, max: 100 } }), shares: qty } } as SmallDealCard);
-      setGameState(newState);
-      gameRoom.broadcastGameState(newState);
-      gameRoom.endTurn();
-      setStockBuyQty('');
-    } else {
-      const newState = buyOpportunity(gameState, card);
-      setGameState(newState);
-      gameRoom.broadcastGameState(newState);
-      gameRoom.endTurn();
+        const newState = buyOpportunity(gameState, { ...card, totalCost, downPayment: totalCost, stockData: { ...(stockData ?? { sharePrice: pricePerShare, priceRange: { min: 1, max: 100 } }), shares: qty } } as SmallDealCard);
+        setGameState(newState);
+        gameRoom.broadcastGameState(newState);
+        gameRoom.endTurn();
+        setStockBuyQty('');
+      } else {
+        const newState = buyOpportunity(gameState, card);
+        setGameState(newState);
+        gameRoom.broadcastGameState(newState);
+        gameRoom.endTurn();
+      }
+    } catch (error) {
+      console.error('Error in onBuyOpportunity:', error);
+      // 显示错误信息而不是白屏
+      alert('购买失败：' + (error instanceof Error ? error.message : '未知错误'));
     }
   };
 
