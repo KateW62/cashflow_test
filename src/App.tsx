@@ -28,11 +28,9 @@ import {
   canBuyOpportunity,
   MAX_LOAN_MULTIPLIER,
 } from './logic/gameLogic';
-import { GameState, Asset, ActionLogEntry } from './logic/gameTypes';
+import { GameState, Asset, SmallDealCard, BigDealCard, DoodadCard, MarketEvent } from './logic/gameTypes';
 import { professions } from './config/professions';
 import { dreams } from './config/dreams';
-import { SmallDealCard, BigDealCard } from './config/cards';
-import { MarketEvent } from './config/marketEvents';
 import {
   Building2,
   Dice6,
@@ -54,6 +52,10 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { useGameRoom } from './hooks/useGameRoom';
+import { SmartDashboard } from './components/SmartDashboard';
+import { MarketTrendWidget, CompactMarketIndicator } from './components/MarketTrendWidget';
+import { StatusBadges, GameProgressIndicator, FinancialHealthQuickView } from './components/StatusIndicators';
+import { SmartPanelToggle, SimpleSmartIndicator } from './components/SmartPanelToggle';
 
 function App() {
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -440,6 +442,9 @@ function App() {
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-24 md:pb-8">
+      {/* 智能面板切换按钮 */}
+      <SmartPanelToggle gameState={gameState} />
+      
       <div className="max-w-7xl mx-auto p-4 md:p-8">
         <div className="flex justify-between items-center mb-6">
           <div>
