@@ -444,6 +444,8 @@ function App() {
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-24 md:pb-8">
       {/* 智能面板切换按钮 */}
       <SmartPanelToggle gameState={gameState} />
+      {/* 简化版智能指示器 */}
+      {gameState && <SimpleSmartIndicator gameState={gameState} />}
       
       <div className="max-w-7xl mx-auto p-4 md:p-8">
         <div className="flex justify-between items-center mb-6">
