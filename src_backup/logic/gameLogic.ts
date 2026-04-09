@@ -3,8 +3,6 @@ import { getRandomProfession, getTotalExpenses, Profession } from '../config/pro
 import { getRandomSmallDealCard, getRandomBigDealCard, getRandomDoodadCard, SmallDealCard, BigDealCard, smallDealCards } from '../config/cards';
 import { Dream } from '../config/dreams';
 import { getRandomMarketEvent, MarketEvent } from '../config/marketEvents';
-import { SmartUnemploymentSystem } from './SmartUnemploymentSystem';
-import { SmartMarketSystem } from './SmartMarketSystem';
 
 export const MAX_LOAN_MULTIPLIER = 10;
 
@@ -341,17 +339,6 @@ export const handleBankruptcy = (state: GameState): GameState => {
 };
 
 export const rollDice = (state: GameState, diceCount: number = 1): GameState => {
-  // 更新市场趋势系统
-  const marketSystem = getMarketSystem();
-  marketSystem.updateMarket(state.actionStep || 0);
-  
-  // 获取当前市场趋势用于显示
-  const currentTrend = marketSystem.getCurrentTrend();
-  if (currentTrend) {
-    // 可以在UI上显示当前市场状态
-    console.log(`当前市场趋势：${currentTrend.name} - ${currentTrend.description}`);
-  }
-  
   // 去掉 isMultiplayer 限制，让单机失业也要停留在原地
   if (state.status.isDownsized && state.status.downsizedTurnsRemaining > 0) {
     const remaining = state.status.downsizedTurnsRemaining - 1;
@@ -362,15 +349,15 @@ export const rollDice = (state: GameState, diceCount: number = 1): GameState => 
       assets: [...(state.assets || [])],
       loans: [...(state.loans || [])],
       children: state.children ?? 0,
-      currentSpecialEvent: null,
-      canRoll: remaining > 0 ? false : true,
+      inflationMultiplier: state.inflationMultiplier ?? 1.0,
+      marketPrices: state.marketPrices || [...DEFAULT_STOCK_PRICES],
       actionLog: [...(state.actionLog || []), logEntry],
       actionStep: (state.actionStep || 0) + 1,
       status: {
         ...state.status,
         downsizedTurnsRemaining: remaining,
-        unemploymentPaydayCount: remaining > 0 ? state.status.unemploymentPaydayCount : 0,
-      }
+        isDownsized: remaining > 0,
+      },
     };
   }
 
@@ -609,67 +596,6 @@ export const payDoodad = (state: GameState, card: any): GameState => {
   };
 };
 
-// 全局智能失业系统实例
-let unemploymentSystem: SmartUnemploymentSystem | null = null;
-
-/**
- * 获取智能失业系统实例（单例模式）
- */
-export const getUnemploymentSystem = (): SmartUnemploymentSystem => {
-  if (!unemploymentSystem) {
-    unemploymentSystem = new SmartUnemploymentSystem();
-  }
-  return unemploymentSystem;
-};
-
-// 全球市场系统实例
-let marketSystemInstance: SmartMarketSystem | null = null;
-
-/**
- * 获取市场系统实例（单例模式）
- */
-export const getMarketSystem = (): SmartMarketSystem => {
-  if (!marketSystemInstance) {
-    marketSystemInstance = new SmartMarketSystem();
-  }
-  return marketSystemInstance;
-};
-
-/**
- * 记录玩家投资决策（用于行为分析）
- */
-export const recordInvestmentBehavior = (state: GameState, investmentType: 'high' | 'medium' | 'low', success: boolean): void => {
-  const system = getUnemploymentSystem();
-  system.recordPlayerBehavior({
-    type: success ? 'successful_investment' : 'failed_investment',
-    riskLevel: investmentType,
-    timestamp: Date.now()
-  });
-};
-
-/**
- * 记录贷款行为
- */
-export const recordLoanBehavior = (state: GameState, amount: number, isRepayment: boolean): void => {
-  const system = getUnemploymentSystem();
-  system.recordPlayerBehavior({
-    type: isRepayment ? 'loan_repayment' : 'loan_taken',
-    riskLevel: amount > 50000 ? 'high' : amount > 20000 ? 'medium' : 'low',
-    timestamp: Date.now()
-  });
-};
-
-/**
- * 检查是否应该发生失业（替代原有的固定概率）
- */
-export const shouldTriggerUnemployment = (state: GameState): boolean => {
-  const system = getUnemploymentSystem();
-  const risk = system.calculateUnemploymentRisk(state);
-  
-  // 使用计算出的风险概率
-  return Math.random() < risk;
-};
-
 export const handleDownsized = (state: GameState): GameState => {
   const safeCash = safeNum(state.cash);
   const cashPenalty = Math.floor(Math.max(0, safeCash) * 0.1);
@@ -678,20 +604,7 @@ export const handleDownsized = (state: GameState): GameState => {
   const unemploymentPaydayCount = state.isMultiplayer ? 0 : 2;
   const unemploymentCount = state.isMultiplayer ? 2 : 0;
 
-  // 智能失业系统：记录这次失业事件
-  const system = getUnemploymentSystem();
-  system.recordPlayerBehavior({
-    type: 'poor_decision',
-    riskLevel: 'high',
-    timestamp: Date.now(),
-    description: '失业事件发生'
-  });
-
-  // 获取风险报告用于日志
-  const riskReport = system.getRiskReport(state);
-  const riskPercentage = Math.round(riskReport.currentRisk * 100);
-
-  const logEntry = addLog(state, `失业！扣除 10% 现金 $${cashPenalty.toLocaleString()}，停薪 ${unemploymentPaydayCount || unemploymentCount} 次（当前失业风险：${riskPercentage}%）`, -cashPenalty, 'negative');
+  const logEntry = addLog(state, `失业！扣除 10% 现金 $${cashPenalty.toLocaleString()}，停薪 ${unemploymentPaydayCount || unemploymentCount} 次`, -cashPenalty, 'negative');
 
   return {
     ...state,
