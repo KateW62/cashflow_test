@@ -1,0 +1,285 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Electric Velocity - PC端游戏预览</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #4c2d8a 100%);
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            color: #f8fafc;
+            overflow-x: hidden;
+        }
+        .preview-container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 2rem;
+        }
+        .header {
+            text-align: center;
+            margin-bottom: 3rem;
+        }
+        .title {
+            font-size: 3rem;
+            font-weight: 800;
+            background: linear-gradient(135deg, #b6a0ff 0%, #7e51ff 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 1rem;
+        }
+        .subtitle {
+            font-size: 1.25rem;
+            color: #94a3b8;
+            margin-bottom: 2rem;
+        }
+        .preview-grid {
+            display: grid;
+            grid-template-columns: 1fr 2fr 1fr;
+            gap: 2rem;
+            margin-bottom: 3rem;
+        }
+        .panel {
+            background: rgba(30, 41, 59, 0.6);
+            backdrop-filter: blur(16px);
+            border: 1px solid rgba(182, 160, 255, 0.2);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            box-shadow: 0 8px 32px rgba(126, 81, 255, 0.3);
+        }
+        .panel h3 {
+            color: #b6a0ff;
+            font-weight: 600;
+            margin-bottom: 1rem;
+        }
+        .circular-board-preview {
+            width: 350px;
+            height: 350px;
+            margin: 0 auto;
+            border: 3px solid rgba(182, 160, 255, 0.3);
+            border-radius: 50%;
+            background: radial-gradient(circle, rgba(30, 41, 59, 0.8) 30%, rgba(182, 160, 255, 0.1) 100%);
+            box-shadow: inset 0 0 40px rgba(126, 81, 255, 0.2), 0 0 60px rgba(126, 81, 255, 0.3);
+            position: relative;
+        }
+        .feature-list {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 3rem;
+        }
+        .feature-card {
+            background: rgba(30, 41, 59, 0.6);
+            border: 1px solid rgba(182, 160, 255, 0.2);
+            border-radius: 1rem;
+            padding: 1.5rem;
+            transition: all 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
+        }
+        .feature-card:hover {
+            transform: translateY(-4px);
+            border-color: rgba(182, 160, 255, 0.4);
+            box-shadow: 0 12px 48px rgba(126, 81, 255, 0.5);
+        }
+        .feature-icon {
+            width: 48px;
+            height: 48px;
+            background: linear-gradient(135deg, #b6a0ff 0%, #7e51ff 100%);
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 1rem;
+            font-size: 24px;
+        }
+        .instructions {
+            background: rgba(30, 41, 59, 0.8);
+            border: 1px solid rgba(182, 160, 255, 0.2);
+            border-radius: 1rem;
+            padding: 2rem;
+            text-align: center;
+        }
+        .cta-button {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            background: linear-gradient(135deg, #b6a0ff 0%, #7e51ff 100%);
+            color: white;
+            padding: 1rem 2rem;
+            border-radius: 0.75rem;
+            text-decoration: none;
+            font-weight: 600;
+            transition: all 0.3s ease;
+            margin: 0.5rem;
+        }
+        .cta-button:hover {
+            transform: scale(1.05);
+            box-shadow: 0 12px 48px rgba(126, 81, 255, 0.5);
+        }
+        @media (max-width: 768px) {
+            .preview-grid {
+                grid-template-columns: 1fr;
+            }
+            .title {
+                font-size: 2rem;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="preview-container">
+        <div class="header">
+            <h1 class="title">Electric Velocity</h1>
+            <p class="subtitle">PC端现金流游戏完整预览</p>
+        </div>
+
+        <div class="preview-grid">
+            <!-- 左侧面板 -->
+            <div class="panel">
+                <h3>🎮 玩家档案</h3>
+                <div style="margin-bottom: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.5rem;">职业</div>
+                    <div style="font-weight: 600; color: #b6a0ff;">工程师</div>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.5rem;">梦想</div>
+                    <div style="font-weight: 600;">环游世界</div>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.5rem;">总步数</div>
+                    <div style="font-weight: 600;">12</div>
+                </div>
+                <div style="display: flex; gap: 0.5rem; margin-top: 1.5rem;">
+                    <span style="background: rgba(52, 211, 153, 0.2); color: #34d399; padding: 0.25rem 0.75rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; border: 1px solid rgba(52, 211, 153, 0.3);">慈善加持: 2 回合</span>
+                </div>
+            </div>
+
+            <!-- 中央游戏板 -->
+            <div class="panel" style="display: flex; flex-direction: column; align-items: center;">
+                <h3 style="margin-bottom: 1.5rem;">🎯 游戏赛道</h3>
+                <div class="circular-board-preview">
+                    <!-- 模拟游戏板 -->
+                    <div style="position: absolute; top: 20px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #a67af3 0%, #7e51ff 100%); color: white; padding: 0.5rem; border-radius: 8px; font-size: 10px; font-weight: 600; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; border: 2px solid transparent; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);">机会</div>
+                    
+                    <div style="position: absolute; top: 50%; right: 20px; transform: translateY(-50%); background: linear-gradient(135deg, #34d399 0%, #10b981 100%); color: white; padding: 0.5rem; border-radius: 8px; font-size: 10px; font-weight: 600; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">发薪</div>
+                    
+                    <div style="position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%); background: linear-gradient(135deg, #fb7185 0%, #f43f5e 100%); color: white; padding: 0.5rem; border-radius: 8px; font-size: 10px; font-weight: 600; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">破财</div>
+                    
+                    <div style="position: absolute; top: 50%; left: 20px; transform: translateY(-50%); background: linear-gradient(135deg, #fbbf24 0%, #f59e0b 100%); color: black; padding: 0.5rem; border-radius: 8px; font-size: 10px; font-weight: 600; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">市场</div>
+                    
+                    <!-- 玩家标记 -->
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 32px; height: 32px; background: linear-gradient(135deg, #34d399 0%, #10b981 100%); border: 3px solid white; border-radius: 50%; box-shadow: 0 0 20px rgba(63, 255, 139, 0.6); z-index: 40; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: white;">P</div>
+                    
+                    <!-- 中心 -->
+                    <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center; background: rgba(30, 41, 59, 0.9); border-radius: 50%; width: 100px; height: 100px; display: flex; flex-direction: column; align-items: center; justify-content: center; border: 2px solid rgba(182, 160, 255, 0.3); box-shadow: inset 0 0 20px rgba(126, 81, 255, 0.2);">
+                        <div style="font-size: 14px; font-weight: bold; color: #b6a0ff; margin-bottom: 4px;">机会</div>
+                        <div style="font-size: 18px; font-weight: 800; color: #34d399; text-shadow: 0 0 10px rgba(52, 211, 153, 0.5);">5</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧面板 -->
+            <div class="panel">
+                <h3>📊 财务状况</h3>
+                <div style="margin-bottom: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.25rem;">现金余额</div>
+                    <div style="font-size: 1.5rem; font-weight: bold; color: #34d399;">$15,000</div>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.25rem;">总收入</div>
+                    <div style="font-weight: 600; color: #34d399;">$9,500</div>
+                </div>
+                <div style="margin-bottom: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.25rem;">总支出</div>
+                    <div style="font-weight: 600; color: #f43f5e;">$6,200</div>
+                </div>
+                <div style="background: rgba(16, 185, 129, 0.1); border: 2px solid rgba(16, 185, 129, 0.5); padding: 1rem; border-radius: 0.75rem; margin-top: 1rem;">
+                    <div style="color: #94a3b8; font-size: 0.875rem; margin-bottom: 0.25rem;">月现金流</div>
+                    <div style="font-size: 1.25rem; font-weight: bold; color: #34d399;">$3,300</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 功能特性 -->
+        <div class="feature-list">
+            <div class="feature-card">
+                <div class="feature-icon">🎲</div>
+                <h4>3D骰子动画</h4>
+                <p style="color: #94a3b8; font-size: 0.875rem;">1.2秒完整滚动动画，配合CSS变换和屏幕震动效果</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">🎯</div>
+                <h4>非线性轨道动画</h4>
+                <p style="color: #94a3b8; font-size: 0.875rem;">cubic-bezier(0.34, 1.56, 0.64, 1) back-out easing，实现"弹跳"效果</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">💎</div>
+                <h4>霓虹渐变设计</h4>
+                <p style="color: #94a3b8; font-size: 0.875rem;">的电光紫(#7e51ff)到翡翠绿(#34d399)渐变，玻璃态UI元素</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">📊</div>
+                <h4>数据可视化</h4>
+                <p style="color: #94a3b8; font-size: 0.875rem;">现金流环状图、股票K线/面积图、失业风险仪表盘</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">📱</div>
+                <h4>三栏响应式布局</h4>
+                <p style="color: #94a3b8; font-size: 0.875rem;">移动端单列，平板分屏，桌面三栏(导航+资料/游戏板/HUD)</p>
+            </div>
+
+            <div class="feature-card">
+                <div class="feature-icon">💰</div>
+                <h4>智能投资流程</h4>
+                <p style="color: #94a3b8; font-size: 0.875rem;">底部滑入模态框，处理状态加载动画，确认流程</p>
+            </div>
+        </div>
+
+        <!-- 操作说明 -->
+        <div class="instructions">
+            <h3 style="margin-bottom: 1rem; color: #b6a0ff;">🚀 如何运行游戏</h3>
+            <p style="color: #94a3b8; margin-bottom: 2rem;">
+                新的PC端优化版本已创建完成！按照以下步骤启动游戏：
+            </p>
+            
+            <div style="display: flex; flex-wrap: wrap; justify-content: center; gap: 1rem;">
+                <a href="http://localhost:5173" class="cta-button" target="_blank">
+                    🎮 启动开发服务器
+                </a>
+                <a href="#/cashflow_test/src/main_desktop.tsx" class="cta-button">
+                    📂 查看源码
+                </a>
+            </div>
+            
+            <div style="margin-top: 2rem; text-align: left; max-width: 600px; margin-left: auto; margin-right: auto;">
+                <h4 style="color: #b6a0ff; margin-bottom: 1rem;">命令行操作：</h4>
+                <pre style="background: rgba(15, 23, 42, 0.8); padding: 1rem; border-radius: 0.5rem; font-size: 0.875rem; overflow-x: auto; border: 1px solid rgba(182, 160, 255, 0.2);">
+# 进入项目目录
+cd cashflow_test
+
+# 安装依赖（如需要）
+npm install
+
+# 启动开发服务器
+npm run dev
+
+# 或者使用我们创建的启动脚本
+./start_electric_velocity.sh
+                </pre>
+            </div>
+            
+            <div style="margin-top: 1rem; padding: 1rem; background: rgba(16, 185, 129, 0.1); border: 1px solid rgba(16, 185, 129, 0.3); border-radius: 0.5rem;">
+                <p style="color: #34d399; margin: 0;">
+                    ✨ 提示：在桌面端按 Ctrl + D 可切换桌面模式
+                </p>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
