@@ -10,6 +10,8 @@ export interface MarketTrend {
   cycle: 'boom' | 'stable' | 'recession';
   duration: number; // 持续时间（回合数）
   affectedCategories: string[];
+  volatility: string;
+  growthRate: number;
   multiplier: number; // 价格乘数
 }
 
@@ -27,7 +29,9 @@ export class SmartMarketSystem {
       cycle: 'boom',
       duration: 15,
       affectedCategories: ['Stock', 'Technology'],
-      multiplier: 1.4
+      multiplier: 1.4,
+      volatility: 'high',
+      growthRate: 0.4
     },
     {
       id: 'housing_boom',
@@ -36,7 +40,9 @@ export class SmartMarketSystem {
       cycle: 'boom',
       duration: 20,
       affectedCategories: ['RealEstate'],
-      multiplier: 1.3
+      multiplier: 1.3,
+      volatility: 'medium',
+      growthRate: 0.3
     },
     {
       id: 'economic_recession',
@@ -45,7 +51,9 @@ export class SmartMarketSystem {
       cycle: 'recession',
       duration: 12,
       affectedCategories: ['Stock', 'RealEstate', 'Business'],
-      multiplier: 0.7
+      multiplier: 0.7,
+      volatility: 'high',
+      growthRate: -0.3
     },
     {
       id: 'stable_growth',
@@ -54,7 +62,9 @@ export class SmartMarketSystem {
       cycle: 'stable',
       duration: 25,
       affectedCategories: ['Stock', 'RealEstate'],
-      multiplier: 1.1
+      multiplier: 1.1,
+      volatility: 'low',
+      growthRate: 0.1
     }
   ];
   

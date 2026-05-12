@@ -64,7 +64,7 @@ export const SmartPanelToggle: React.FC<SmartPanelToggleProps> = ({ gameState })
       </button>
       
       {/* 按钮动画效果 */}
-      <style jsx>{`
+      <style>{`
         @keyframes pulse {
           0%, 100% {
             box-shadow: 0 4px 20px rgba(0,0,0,0.15);

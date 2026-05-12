@@ -13,8 +13,8 @@ interface GameRoomHook {
   players: Player[];
   currentTurnPlayerId: string | null;
   isMyTurn: boolean;
-  createRoom: (roomId: string, playerName: string) => Promise<void>;
-  joinRoom: (roomId: string, playerName: string) => Promise<void>;
+  createRoom: (roomId: string, playerName: string) => Promise<boolean>;
+  joinRoom: (roomId: string, playerName: string) => Promise<boolean>;
   leaveRoom: () => void;
   clearRoom: () => void;
   broadcastGameState: (gameState: any) => void;
@@ -31,10 +31,10 @@ export const useGameRoom = (localPlayerId: string): GameRoomHook => {
 
   const isMyTurn = currentTurnPlayerId === localPlayerId;
 
-  const createRoom = async (newRoomId: string, playerName: string) => {
+  const createRoom = async (newRoomId: string, playerName: string): Promise<boolean> => {
     if (!supabase) {
       console.warn('Supabase not available, skipping multiplayer setup');
-      return;
+      return false;
     }
 
     if (channelRef.current) {
@@ -91,10 +91,11 @@ export const useGameRoom = (localPlayerId: string): GameRoomHook => {
 
     channelRef.current = channel;
     setRoomId(newRoomId);
+    return true;
   };
 
-  const joinRoom = async (existingRoomId: string, playerName: string) => {
-    await createRoom(existingRoomId, playerName);
+  const joinRoom = async (existingRoomId: string, playerName: string): Promise<boolean> => {
+    return createRoom(existingRoomId, playerName);
   };
 
   const leaveRoom = () => {

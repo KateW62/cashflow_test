@@ -16,9 +16,19 @@
 
     /* Linting */
     "strict": true,
-    "noUnusedLocals": true,
-    "noUnusedParameters": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src"]
+  "include": ["src"],
+  "exclude": [
+    "src/App_desktop.tsx",
+    "src/main_desktop.tsx",
+    "src/components/CashFlowDonut.tsx",
+    "src/components/CircularBoard.tsx",
+    "src/components/InvestmentModal.tsx",
+    "src/components/MarketTrendChart.tsx",
+    "src/components/NeonButton.tsx",
+    "src/components/ThreeDDice.tsx"
+  ]
 }

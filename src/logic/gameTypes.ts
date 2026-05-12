@@ -3,6 +3,8 @@ import { SmallDealCard, BigDealCard, DoodadCard } from '../config/cards';
 import { Dream } from '../config/dreams';
 import { MarketEvent } from '../config/marketEvents';
 
+export type { SmallDealCard, BigDealCard, DoodadCard, MarketEvent };
+
 export type GameTrack = 'rat_race' | 'fast_track';
 
 export type SpaceType = 'Payday' | 'Opportunity' | 'Doodad' | 'Market' | 'Downsized' | 'Charity' | 'Baby' | 'BigDeal' | 'Dream';
@@ -55,9 +57,34 @@ export interface ActionLogEntry {
   timestamp: string;
 }
 
+export interface BankruptcyLiquidationEntry {
+  assetId: string;
+  assetName: string;
+  salePrice: number;
+  sharesSold?: number;
+  remainingShares?: number;
+  weeklyIncomeLost: number;
+  reason: string;
+}
+
 export interface StockPrice {
   tag: string;
   price: number;
+  symbol?: string;
+  tags?: string[];
+  currentPrice?: number;
+}
+
+export interface LiquidationEntry {
+  assetId: string;
+  assetName: string;
+  salePrice: number;
+}
+
+export interface BankruptcyNotice {
+  entries: LiquidationEntry[];
+  totalRecovered: number;
+  remainingCash: number;
 }
 
 export interface GameState {
@@ -77,9 +104,11 @@ export interface GameState {
   canRoll: boolean;
   status: PlayerStatus;
   paydayMessage?: string;
+  bankruptcyNotice?: BankruptcyNotice;
   inflationMultiplier: number;
   mortgageMultiplier: number; // 去掉可选，强制初始化
   marketPrices: StockPrice[];
+  bankruptcyLiquidation?: BankruptcyLiquidationEntry[];
   actionLog: ActionLogEntry[];
   actionStep: number;
   isMultiplayer: boolean;

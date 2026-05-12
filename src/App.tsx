@@ -13,7 +13,6 @@ import {
   handleBaby,
   handleDream,
   takeLoan,
-  canTakeLoan,
   repayLoan,
   canEscapeRatRace,
   escapeToFastTrack,
@@ -23,16 +22,16 @@ import {
   getAffectedAssets,
   calculateSalePrice,
   getMarketPrice,
+  getOpportunityStockPrice,
   buyStockShares,
   sellStockShares,
   canBuyOpportunity,
   MAX_LOAN_MULTIPLIER,
 } from './logic/gameLogic';
-import { GameState, Asset, SmallDealCard, BigDealCard, DoodadCard, MarketEvent } from './logic/gameTypes';
+import { GameState, Asset, SmallDealCard, BigDealCard, MarketEvent, ActionLogEntry } from './logic/gameTypes';
 import { professions } from './config/professions';
 import { dreams } from './config/dreams';
 import {
-  Building2,
   Dice6,
   X,
   AlertCircle,
@@ -40,7 +39,6 @@ import {
   LogIn,
   Heart,
   Baby as BabyIcon,
-  Briefcase,
   DollarSign,
   TrendingUp,
   Star,
@@ -52,10 +50,29 @@ import {
   ChevronUp,
 } from 'lucide-react';
 import { useGameRoom } from './hooks/useGameRoom';
-import { SmartDashboard } from './components/SmartDashboard';
-import { MarketTrendWidget, CompactMarketIndicator } from './components/MarketTrendWidget';
-import { StatusBadges, GameProgressIndicator, FinancialHealthQuickView } from './components/StatusIndicators';
 import { SmartPanelToggle, SimpleSmartIndicator } from './components/SmartPanelToggle';
+import { SetupDialog } from './components/SetupDialog';
+import { ActionLogPanel } from './components/ActionLogPanel';
+import { LoanDialog } from './components/LoanDialog';
+import { AssetSummaryPanel } from './components/AssetSummaryPanel';
+import { BankruptcyNotice, type BankruptcyNoticeData } from './components/BankruptcyNotice';
+import { TradeRecapPanel, type TradeRecapItem } from './components/TradeRecapPanel';
+import { MarketHistoryPanel } from './components/MarketHistoryPanel';
+import { RiskHintPanel, type RiskHint as RiskHintPanelItem } from './components/RiskHintPanel';
+import { GameSummaryPanel, type GameSummaryHighlight, type GameSummaryMetric } from './components/GameSummaryPanel';
+import {
+  formatMarketHistoryInput,
+  getGameSummary,
+  getMarketSnapshot,
+  getRiskHints,
+  summarizeTrades,
+  type MarketSnapshot,
+} from './logic/gameAnalytics';
+
+const formatMoney = (value: number, signed = false) => {
+  const prefix = signed && value > 0 ? '+' : '';
+  return `${prefix}$${Math.round(value).toLocaleString()}`;
+};
 
 function App() {
   const [gameState, setGameState] = useState<GameState | null>(null);
@@ -80,6 +97,7 @@ function App() {
   const [stockBuyQty, setStockBuyQty] = useState<string>('');
   const [marketStockBuyAmounts, setMarketStockBuyAmounts] = useState<Record<string, string>>({});
   const [marketStockSellAmounts, setMarketStockSellAmounts] = useState<Record<string, string>>({});
+  const [marketSnapshots, setMarketSnapshots] = useState<MarketSnapshot[]>([]);
 
   const logEndRef = useRef<HTMLDivElement>(null);
 
@@ -112,8 +130,9 @@ function App() {
 
       const newState = initialState(profession, dream);
       setGameState(newState);
+      setMarketSnapshots([]);
       setShowSetupDialog(false);
-      setShowRoomDialog(true);
+      setShowRoomDialog(false);
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : String(error);
       setInitError(`初始化失败: ${errorMsg}`);
@@ -122,8 +141,8 @@ function App() {
 
   const handleJoinRoom = async () => {
     if (roomInput.trim() && playerName.trim()) {
-      await gameRoom.joinRoom(roomInput.trim(), playerName.trim());
-      setGameState(prev => prev ? { ...prev, isMultiplayer: true } : prev);
+      const joined = await gameRoom.joinRoom(roomInput.trim(), playerName.trim());
+      setGameState(prev => prev ? { ...prev, isMultiplayer: joined } : prev);
       setShowRoomDialog(false);
     }
   };
@@ -133,15 +152,112 @@ function App() {
   };
 
   const financials = gameState ? calculateFinancials(gameState) : null;
-  const canRollDice = gameState ? (gameState.canRoll && (gameRoom.roomId ? gameRoom.isMyTurn : true)) : false;
+  const hasWon = gameState?.currentSpecialEvent === 'winner';
+  const canRollDice = gameState ? (!hasWon && gameState.canRoll && (gameRoom.roomId ? gameRoom.isMyTurn : true)) : false;
   const canEscape = gameState ? canEscapeRatRace(gameState) : false;
+  const tradeSummary = useMemo(() => gameState ? summarizeTrades(gameState) : null, [gameState]);
+  const riskHints = useMemo(() => gameState ? getRiskHints(gameState) : [], [gameState]);
+  const gameSummary = useMemo(() => gameState ? getGameSummary(gameState) : null, [gameState]);
+  const marketHistorySeries = useMemo(() => formatMarketHistoryInput(marketSnapshots), [marketSnapshots]);
+
+  const tradeRecapItems: TradeRecapItem[] = useMemo(() => {
+    if (!tradeSummary) return [];
+
+    return tradeSummary.entries
+      .slice()
+      .reverse()
+      .map(entry => ({
+        id: entry.id,
+        kind: entry.kind === 'stock' || entry.kind === 'asset'
+          ? entry.direction
+          : entry.kind === 'loan'
+            ? 'buy'
+            : 'dividend',
+        assetName: entry.name,
+        quantity: entry.shares,
+        pricePerUnit: entry.pricePerShare,
+        totalAmount: entry.amount,
+        realizedGain: entry.realizedProfit,
+        note: entry.message,
+        step: entry.step,
+      }));
+  }, [tradeSummary]);
+
+  const riskPanelItems: RiskHintPanelItem[] = useMemo(() => riskHints.map(hint => ({
+    id: hint.id,
+    level: hint.level === 'danger' ? 'danger' : hint.level === 'warning' ? 'watch' : 'safe',
+    title: hint.title,
+    message: hint.message,
+    metric: typeof hint.value === 'number'
+      ? hint.id === 'stock-concentration'
+        ? `${Math.round(hint.value * 100)}%`
+        : formatMoney(hint.value)
+      : undefined,
+  })), [riskHints]);
+
+  const summaryMetrics: GameSummaryMetric[] = useMemo(() => {
+    if (!gameSummary) return [];
+
+    return [
+      { label: '完成步数', value: gameSummary.turns },
+      { label: '最终现金', value: formatMoney(gameSummary.cash), tone: gameSummary.cash >= 0 ? 'good' : 'bad' },
+      { label: '净资产', value: formatMoney(gameSummary.netWorth), tone: gameSummary.netWorth >= 0 ? 'good' : 'bad' },
+      { label: '月现金流', value: formatMoney(gameSummary.monthlyCashFlow, true), tone: gameSummary.monthlyCashFlow >= 0 ? 'good' : 'bad' },
+      { label: '月被动收入', value: formatMoney(gameSummary.monthlyPassiveIncome), tone: 'good' },
+      { label: '总资产估值', value: formatMoney(gameSummary.totalAssetValue) },
+      { label: '贷款总额', value: formatMoney(gameSummary.totalLoans), tone: gameSummary.totalLoans > 0 ? 'bad' : 'neutral' },
+      { label: '最终赛道', value: gameSummary.track === 'fast_track' ? '快车道' : '老鼠赛跑' },
+    ];
+  }, [gameSummary]);
+
+  const summaryHighlights: GameSummaryHighlight[] = useMemo(() => {
+    if (!gameSummary) return [];
+    const highlights: GameSummaryHighlight[] = [];
+
+    if (gameSummary.bestRealizedTrade) {
+      highlights.push({
+        label: '最佳交易',
+        title: gameSummary.bestRealizedTrade.name,
+        value: formatMoney(gameSummary.bestRealizedTrade.realizedProfit || 0, true),
+        description: gameSummary.bestRealizedTrade.message,
+      });
+    }
+
+    if (gameSummary.worstRealizedTrade) {
+      highlights.push({
+        label: '最大亏损',
+        title: gameSummary.worstRealizedTrade.name,
+        value: formatMoney(gameSummary.worstRealizedTrade.realizedProfit || 0, true),
+        description: gameSummary.worstRealizedTrade.message,
+      });
+    }
+
+    if (gameSummary.maxNegativeCashEvent) {
+      highlights.push({
+        label: '最大投入',
+        title: gameSummary.maxNegativeCashEvent.name,
+        value: formatMoney(gameSummary.maxNegativeCashEvent.amount),
+        description: gameSummary.maxNegativeCashEvent.message,
+      });
+    }
+
+    return highlights;
+  }, [gameSummary]);
+
+  const commitGameState = (nextState: GameState, options: { settleBankruptcy?: boolean; endTurn?: boolean } = {}) => {
+    const settledState = options.settleBankruptcy ? handleBankruptcy(nextState) : nextState;
+    setGameState(settledState);
+    gameRoom.broadcastGameState(settledState);
+    if (options.endTurn) {
+      gameRoom.endTurn();
+    }
+    return settledState;
+  };
 
   const onRollDice = (diceCount: number = 1) => {
     if (!gameState) return;
     let newState = rollDice(gameState, diceCount);
-    newState = handleBankruptcy(newState);
-    setGameState(newState);
-    gameRoom.broadcastGameState(newState);
+    newState = commitGameState(newState, { settleBankruptcy: true });
 
     if (!newState.currentEvent && !newState.currentSpecialEvent) {
       gameRoom.endTurn();
@@ -167,7 +283,7 @@ function App() {
         const qty = parseInt(stockBuyQty) || 0;
         if (qty <= 0) return;
         const stockData = (card as SmallDealCard).stockData;
-        const pricePerShare = stockData?.sharePrice ?? card.totalCost;
+        const pricePerShare = getOpportunityStockPrice(gameState, card);
         const totalCost = qty * pricePerShare;
         if (gameState.cash < totalCost) return;
 
@@ -201,25 +317,19 @@ function App() {
   const onPayDoodad = () => {
     if (!gameState || !gameState.currentEvent) return;
     const newState = payDoodad(gameState, gameState.currentEvent);
-    setGameState(newState);
-    gameRoom.broadcastGameState(newState);
-    gameRoom.endTurn();
+    commitGameState(newState, { settleBankruptcy: true, endTurn: true });
   };
 
   const onHandleDownsized = () => {
     if (!gameState) return;
     const newState = handleDownsized(gameState);
-    setGameState(newState);
-    gameRoom.broadcastGameState(newState);
-    gameRoom.endTurn();
+    commitGameState(newState, { settleBankruptcy: true, endTurn: true });
   };
 
   const onHandleCharity = (donated: boolean) => {
     if (!gameState) return;
     const newState = handleCharity(gameState, donated);
-    setGameState(newState);
-    gameRoom.broadcastGameState(newState);
-    gameRoom.endTurn();
+    commitGameState(newState, { settleBankruptcy: true, endTurn: true });
   };
 
   const onHandleBaby = () => {
@@ -308,9 +418,19 @@ function App() {
     setMarketStockSellAmounts(prev => ({ ...prev, [assetId]: '' }));
   };
 
+  const dismissBankruptcyNotice = () => {
+    setGameState(prev => {
+      if (!prev?.bankruptcyLiquidation?.length) return prev;
+      const nextState = { ...prev, bankruptcyLiquidation: [] };
+      gameRoom.broadcastGameState(nextState);
+      return nextState;
+    });
+  };
+
   const handleRestartGame = () => {
     gameRoom.clearRoom();
     setGameState(null);
+    setMarketSnapshots([]);
     setShowSetupDialog(true);
     setShowRoomDialog(false);
     setRoomInput('');
@@ -326,7 +446,7 @@ function App() {
 
   useEffect(() => {
     gameRoom.onGameStateUpdate((updatedState, _playerId, triggerPlayerId) => {
-      if (triggerPlayerId === localPlayerId) {
+      if (triggerPlayerId !== localPlayerId) {
         setGameState({
           ...updatedState,
           assets: [...(updatedState.assets || [])],
@@ -356,6 +476,27 @@ function App() {
     setStockBuyQty('');
   }, [gameState?.currentEvent]);
 
+  useEffect(() => {
+    if (!gameState) return;
+
+    const snapshot = getMarketSnapshot(gameState);
+    const priceKey = snapshot.prices
+      .map(price => `${price.symbol}:${price.price}`)
+      .sort()
+      .join('|');
+
+    setMarketSnapshots(prev => {
+      const lastSnapshot = prev[prev.length - 1];
+      const lastKey = lastSnapshot?.prices
+        .map(price => `${price.symbol}:${price.price}`)
+        .sort()
+        .join('|');
+
+      if (lastKey === priceKey) return prev;
+      return [...prev, snapshot].slice(-20);
+    });
+  }, [gameState]);
+
   const diceToRoll = (gameState?.status.hasCharityBonus && gameState?.status.charityTurnsRemaining > 0) ? 2 : 1;
   const leverageBlocked = financials?.isOverLeveraged ?? false;
 
@@ -365,74 +506,21 @@ function App() {
     return (gameState.assets || []).filter(a =>
       (a.tags || []).some(t => ['Stock', 'stock', 'MYT4U', 'OK4U', 'MYJT'].includes(t))
     );
-  }, [gameState?.assets]);
+  }, [gameState]);
 
   if (!gameState || !financials) {
     return (
       <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 p-4 md:p-8">
         {showSetupDialog && (
-          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-            <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full p-6 md:p-8 max-h-[90vh] overflow-y-auto">
-              <h2 className="text-3xl font-bold text-slate-800 mb-6 text-center">现金流游戏</h2>
-
-              {initError && (
-                <div className="mb-6 p-4 bg-red-50 border-2 border-red-300 rounded-lg">
-                  <div className="flex items-center gap-2 text-red-800">
-                    <AlertCircle size={20} />
-                    <span className="font-semibold">错误: {initError}</span>
-                  </div>
-                  <button onClick={() => setInitError(null)} className="mt-2 text-sm text-red-600 hover:text-red-700 underline">关闭</button>
-                </div>
-              )}
-
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                  <Briefcase size={20} />
-                  选择职业
-                </h3>
-                <div className="grid grid-cols-2 gap-3">
-                  {Object.entries(professions).map(([key, prof]) => (
-                    <button
-                      key={key}
-                      onClick={() => setSelectedProfession(key)}
-                      className={`p-4 rounded-xl border-2 transition text-left ${selectedProfession === key ? 'border-blue-500 bg-blue-50' : 'border-slate-200 hover:border-slate-300'}`}
-                    >
-                      <p className="font-semibold text-slate-800">{prof.name}</p>
-                      <p className="text-sm text-slate-600">工资: ${prof.salary.toLocaleString()}</p>
-                      <p className="text-xs text-slate-500">初始现金: ${prof.cash.toLocaleString()}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="mb-6">
-                <h3 className="text-lg font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                  <Star size={20} />
-                  选择梦想
-                </h3>
-                <div className="grid grid-cols-2 gap-3">
-                  {dreams.map((dream) => (
-                    <button
-                      key={dream.id}
-                      onClick={() => setSelectedDream(dream.id)}
-                      className={`p-4 rounded-xl border-2 transition text-left ${selectedDream === dream.id ? 'border-cyan-500 bg-cyan-50' : 'border-slate-200 hover:border-slate-300'}`}
-                    >
-                      <p className="font-semibold text-slate-800">{dream.name}</p>
-                      <p className="text-sm text-slate-600">${dream.cost.toLocaleString()}</p>
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <button
-                onClick={startGame}
-                disabled={!selectedProfession || !selectedDream}
-                className={`w-full px-6 py-4 font-bold rounded-xl shadow-lg transform transition text-lg ${selectedProfession && selectedDream ? 'bg-blue-600 hover:bg-blue-700 text-white hover:scale-105 active:scale-95' : 'bg-gray-300 text-gray-500 cursor-not-allowed'}`}
-              >
-                开始游戏
-              </button>
-            </div>
-          </div>
+          <SetupDialog
+            initError={initError}
+            selectedProfession={selectedProfession}
+            selectedDream={selectedDream}
+            onClearError={() => setInitError(null)}
+            onSelectProfession={setSelectedProfession}
+            onSelectDream={setSelectedDream}
+            onStartGame={startGame}
+          />
         )}
       </div>
     );
@@ -441,11 +529,33 @@ function App() {
   // Derived values for opportunity stock card
   const currentCard = gameState.currentEvent as SmallDealCard | null;
   const isStockOpportunity = currentCard?.type === 'SmallDeal' && (currentCard.tags || []).some(t => t.toLowerCase() === 'stock');
-  const stockCardPrice = isStockOpportunity ? (currentCard!.stockData?.sharePrice ?? currentCard!.totalCost) : 0;
+  const stockCardPrice = isStockOpportunity ? getOpportunityStockPrice(gameState, currentCard!) : 0;
   const stockBuyQtyNum = Math.max(0, parseInt(stockBuyQty) || 0);
   const stockBuyTotal = stockBuyQtyNum * stockCardPrice;
   const stockMaxBuyable = stockCardPrice > 0 ? Math.floor(gameState.cash / stockCardPrice) : 0;
   const stockBuyInvalid = stockBuyQtyNum <= 0 || stockBuyTotal > gameState.cash;
+  const bankruptcyNotice = (() => {
+    const stateWithNotice = gameState as GameState & {
+      bankruptcyNotice?: BankruptcyNoticeData;
+      bankruptcy?: BankruptcyNoticeData;
+      liquidation?: BankruptcyNoticeData;
+    };
+
+    if (gameState.bankruptcyLiquidation?.length) {
+      return {
+        entries: gameState.bankruptcyLiquidation.map(entry => ({
+          assetName: entry.assetName,
+          salePrice: entry.salePrice,
+          sharesSold: entry.sharesSold,
+          remainingShares: entry.remainingShares,
+          reason: entry.reason,
+        })),
+        remainingCash: gameState.cash,
+      };
+    }
+
+    return stateWithNotice.bankruptcyNotice || stateWithNotice.bankruptcy || stateWithNotice.liquidation || null;
+  })();
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-24 md:pb-8">
@@ -535,21 +645,21 @@ function App() {
 
                 <div className="flex flex-col p-3 bg-slate-50 rounded-xl">
                   <span className="text-xs text-slate-500 mb-1">工资</span>
-                  <span className="font-bold text-slate-700">${financials.salary.toLocaleString()}</span>
+                  <span className="font-bold text-slate-700">${(financials.salary * 4).toLocaleString()}</span>
                 </div>
                 <div className={`flex flex-col p-3 rounded-xl ${financials.passiveIncome > 0 ? 'bg-amber-50' : 'bg-slate-50'}`}>
                   <span className="text-xs text-slate-500 mb-1">被动收入</span>
                   <span className={`font-bold ${financials.passiveIncome > 0 ? 'text-amber-600' : 'text-slate-500'}`}>
-                    ${financials.passiveIncome.toLocaleString()}
+                    ${(financials.passiveIncome * 4).toLocaleString()}
                   </span>
                 </div>
                 <div className="flex flex-col p-3 bg-slate-50 rounded-xl">
                   <span className="text-xs text-slate-500 mb-1">总收入</span>
-                  <span className="font-bold text-slate-700">${financials.totalIncome.toLocaleString()}</span>
+                  <span className="font-bold text-slate-700">${financials.monthlyTotalIncome.toLocaleString()}</span>
                 </div>
                 <div className="flex flex-col p-3 bg-slate-50 rounded-xl">
                   <span className="text-xs text-slate-500 mb-1">总支出</span>
-                  <span className="font-bold text-slate-700">${financials.totalExpenses.toLocaleString()}</span>
+                  <span className="font-bold text-slate-700">${financials.monthlyTotalExpenses.toLocaleString()}</span>
                 </div>
 
                 <div className={`col-span-2 md:col-span-4 flex justify-between items-center p-4 rounded-xl border-2 ${financials.monthlyCashFlow >= 0 ? 'bg-blue-50 border-blue-300' : 'bg-red-50 border-red-300'}`}>
@@ -581,32 +691,32 @@ function App() {
                 <div className="grid grid-cols-2 gap-2 text-sm">
                   <div className="flex justify-between">
                     <span className="text-slate-500">税收:</span>
-                    <span className="font-medium">${gameState.professionData.tax.toLocaleString()}</span>
+                    <span className="font-medium">${(gameState.professionData.tax * 4).toLocaleString()}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-slate-500">房贷:</span>
-                    <span className="font-medium">${Math.floor(gameState.professionData.mortgage * (gameState.mortgageMultiplier ?? 1)).toLocaleString()}</span>
+                    <span className="font-medium">${(Math.floor(gameState.professionData.mortgage * (gameState.mortgageMultiplier ?? 1)) * 4).toLocaleString()}</span>
                   </div>
                   {gameState.professionData.studentLoan > 0 && (
                     <div className="flex justify-between">
                       <span className="text-slate-500">学贷:</span>
-                      <span className="font-medium">${gameState.professionData.studentLoan.toLocaleString()}</span>
+                      <span className="font-medium">${(gameState.professionData.studentLoan * 4).toLocaleString()}</span>
                     </div>
                   )}
                   <div className="flex justify-between">
                     <span className="text-slate-500">其他:</span>
-                    <span className="font-medium">${gameState.professionData.otherExpenses.toLocaleString()}</span>
+                    <span className="font-medium">${Math.floor(gameState.professionData.otherExpenses * (gameState.inflationMultiplier ?? 1) * 4).toLocaleString()}</span>
                   </div>
                   {gameState.children > 0 && (
                     <div className="flex justify-between">
                       <span className="text-slate-500">孩子支出:</span>
-                      <span className="font-medium">${(gameState.children * gameState.professionData.childExpense).toLocaleString()}</span>
+                      <span className="font-medium">${(gameState.children * gameState.professionData.childExpense * 4).toLocaleString()}</span>
                     </div>
                   )}
                   {financials.loanInterest > 0 && (
                     <div className="flex justify-between text-red-600">
                       <span>贷款利息:</span>
-                      <span className="font-medium">${financials.loanInterest.toLocaleString()}</span>
+                      <span className="font-medium">${(financials.loanInterest * 4).toLocaleString()}</span>
                     </div>
                   )}
                   {(gameState.mortgageMultiplier ?? 1.0) > 1.0 && (
@@ -719,7 +829,7 @@ function App() {
                     <div className="flex justify-between items-start mb-2">
                       <div>
                         <p className="font-semibold text-slate-700 text-sm">本金: ${loan.amount.toLocaleString()}</p>
-                        <p className="text-xs text-slate-500">月利息: ${loan.monthlyInterest.toLocaleString()}</p>
+                        <p className="text-xs text-slate-500">月利息: ${(loan.weeklyInterest * 4).toLocaleString()}</p>
                       </div>
                     </div>
                     <button
@@ -734,120 +844,28 @@ function App() {
               </div>
             )}
 
-            {/* Read-only asset list */}
-            {gameState.assets.length > 0 && (
-              <div className="bg-white rounded-2xl shadow-lg p-5">
-                <h3 className="text-base font-semibold text-slate-700 mb-3 flex items-center gap-2">
-                  <Building2 size={18} className="text-amber-500" />
-                  资产列表
-                </h3>
-                <div className="space-y-2">
-                  {gameState.assets.map((asset: Asset) => {
-                    const isStock = (asset.tags || []).some(t => ['Stock', 'stock', 'MYT4U', 'OK4U', 'MYJT'].includes(t));
-                    const priceTag = isStock
-                      ? ((asset.tags || []).find(t => ['MYT4U', 'OK4U', 'MYJT'].includes(t)) || 'Stock')
-                      : null;
-                    const currentPrice = priceTag ? getMarketPrice(gameState, priceTag) : null;
-
-                    return (
-                      <div key={asset.id} className="p-3 bg-amber-50 rounded-xl border border-amber-200">
-                        <div className="flex items-start justify-between gap-2">
-                          <h4 className="font-semibold text-slate-700 text-sm flex items-center gap-1">
-                            {isStock ? <BarChart2 size={14} className="text-blue-500 shrink-0" /> : <Building2 size={14} className="text-amber-600 shrink-0" />}
-                            {asset.name}
-                          </h4>
-                          {asset.subtype && (
-                            <span className={`shrink-0 text-xs font-semibold px-1.5 py-0.5 rounded-full ${asset.subtype === 'Income' ? 'bg-green-100 text-green-700' : asset.subtype === 'Growth' ? 'bg-blue-100 text-blue-700' : asset.subtype === 'Speculative' ? 'bg-orange-100 text-orange-700' : 'bg-slate-100 text-slate-600'}`}>
-                              {asset.subtype === 'Income' ? '收入型' : asset.subtype === 'Growth' ? '成长型' : asset.subtype === 'Speculative' ? '投机型' : '稳健型'}
-                            </span>
-                          )}
-                        </div>
-                        {isStock && asset.shares != null ? (
-                          <div className="mt-1.5 text-xs text-slate-600 space-y-0.5">
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">持有:</span>
-                              <span className="font-semibold">{asset.shares} 股</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-500">平均成本:</span>
-                              <span className="font-semibold">${asset.shares > 0 ? Math.round(asset.cost / asset.shares) : 0}/股</span>
-                            </div>
-                            {currentPrice != null && (
-                              <div className="flex justify-between">
-                                <span className="text-slate-500">当前价格:</span>
-                                <span className="font-semibold text-blue-600">${currentPrice}/股</span>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex justify-between text-xs text-slate-500 mt-1">
-                            <span>首付: ${asset.downPayment.toLocaleString()}</span>
-                            <span className={`font-semibold ${asset.monthlyIncome >= 0 ? 'text-amber-600' : 'text-red-500'}`}>
-                              月收支: {asset.monthlyIncome >= 0 ? '+' : ''}${asset.monthlyIncome.toLocaleString()}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            <RiskHintPanel hints={riskPanelItems} />
+            <TradeRecapPanel trades={tradeRecapItems} />
+            <MarketHistoryPanel series={marketHistorySeries} />
+            <AssetSummaryPanel gameState={gameState} />
           </div>
         </div>
       </div>
 
+      <BankruptcyNotice notice={bankruptcyNotice} onDismiss={dismissBankruptcyNotice} />
+
       {/* Action log panel */}
-      {showActionLog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center z-40 p-0 md:p-4">
-          <div className="bg-white w-full md:max-w-lg md:rounded-2xl shadow-2xl flex flex-col max-h-[80vh] rounded-t-2xl">
-            <div className="flex justify-between items-center p-4 border-b">
-              <h3 className="text-lg font-bold text-slate-800 flex items-center gap-2">
-                <ScrollText size={20} />
-                操作日志 ({gameState.actionLog.length} 条)
-              </h3>
-              <button onClick={() => setShowActionLog(false)} className="text-slate-400 hover:text-slate-600">
-                <X size={24} />
-              </button>
-            </div>
-            <div className="overflow-y-auto flex-1 p-4 space-y-2">
-              {gameState.actionLog.length === 0 ? (
-                <p className="text-slate-400 text-center py-8">暂无日志</p>
-              ) : (
-                gameState.actionLog.map((entry: ActionLogEntry) => (
-                  <div key={entry.id} className={`p-3 rounded-xl border text-sm ${entry.type === 'positive' ? 'bg-green-50 border-green-200' : entry.type === 'negative' ? 'bg-red-50 border-red-200' : 'bg-slate-50 border-slate-200'}`}>
-                    <div className="flex justify-between items-start gap-2">
-                      <span className="text-slate-700">{entry.message}</span>
-                      {entry.cashChange !== 0 && (
-                        <span className={`shrink-0 font-bold ${entry.cashChange > 0 ? 'text-green-600' : 'text-red-600'}`}>
-                          {entry.cashChange > 0 ? '+' : ''}${entry.cashChange.toLocaleString()}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex gap-3 mt-1 text-xs text-slate-400">
-                      <span>回合 {entry.step}</span>
-                      <span>现金流: ${entry.cashFlow.toLocaleString()}</span>
-                      <span>被动: ${entry.passiveIncome.toLocaleString()}</span>
-                    </div>
-                  </div>
-                ))
-              )}
-              <div ref={logEndRef} />
-            </div>
-            <div className="p-4 border-t">
-              <button
-                onClick={() => { setShowActionLog(false); setShowFullLog(true); }}
-                className="w-full px-4 py-2 bg-slate-800 text-white font-semibold rounded-xl transition hover:bg-slate-700 text-sm"
-              >
-                查看完整回溯报告
-              </button>
-            </div>
-          </div>
-        </div>
+      {showActionLog && !hasWon && (
+        <ActionLogPanel
+          entries={gameState.actionLog}
+          logEndRef={logEndRef}
+          onClose={() => setShowActionLog(false)}
+          onOpenFullLog={() => { setShowActionLog(false); setShowFullLog(true); }}
+        />
       )}
 
       {/* Payday notification */}
-      {gameState?.paydayMessage && (
+      {gameState?.paydayMessage && !hasWon && (
         <div className="fixed top-8 left-1/2 transform -translate-x-1/2 z-50 animate-bounce">
           <div className="bg-green-600 text-white px-8 py-4 rounded-xl shadow-2xl flex items-center gap-3">
             <DollarSign size={24} className="text-green-200" />
@@ -857,7 +875,7 @@ function App() {
       )}
 
       {/* Current event modal */}
-      {gameState?.currentEvent && (
+      {gameState?.currentEvent && !hasWon && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
           <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 relative rounded-t-2xl max-h-[90vh] overflow-y-auto">
             <div className="absolute top-4 right-4">
@@ -1014,7 +1032,7 @@ function App() {
                         </div>
                         <div className="space-y-3">
                           {affectedAssets.map((asset: Asset) => {
-                            const salePrice = calculateSalePrice(asset, marketEvent);
+                            const salePrice = calculateSalePrice(asset, gameState, marketEvent);
                             const profit = salePrice - asset.cost;
                             const profitPercent = asset.cost > 0 ? ((profit / asset.cost) * 100).toFixed(1) : '0.0';
 
@@ -1208,7 +1226,7 @@ function App() {
       )}
 
       {/* Downsized event */}
-      {gameState?.currentSpecialEvent === 'downsized' && (
+      {gameState?.currentSpecialEvent === 'downsized' && !hasWon && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
           <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
             <div className="inline-block px-3 py-1 bg-red-100 text-red-800 text-sm font-semibold rounded-full mb-3">失业危机</div>
@@ -1234,7 +1252,7 @@ function App() {
       )}
 
       {/* Charity event */}
-      {gameState?.currentSpecialEvent === 'charity' && financials && (
+      {gameState?.currentSpecialEvent === 'charity' && financials && !hasWon && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
           <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
             <div className="inline-flex items-center gap-1 px-3 py-1 bg-pink-100 text-pink-800 text-sm font-semibold rounded-full mb-3">
@@ -1246,15 +1264,15 @@ function App() {
             <div className="bg-pink-50 rounded-xl p-4 mb-4 text-sm">
               <div className="flex justify-between">
                 <span className="text-slate-700">捐赠金额：</span>
-                <span className="font-bold text-pink-600">${Math.floor(financials.totalIncome * 0.1).toLocaleString()}</span>
+                <span className="font-bold text-pink-600">${Math.floor(financials.monthlyTotalIncome * 0.1).toLocaleString()}</span>
               </div>
             </div>
             <div className="flex gap-3">
               <button onClick={() => onHandleCharity(false)} className="flex-1 px-4 py-3 bg-slate-200 hover:bg-slate-300 text-slate-700 font-semibold rounded-xl transition text-sm">拒绝</button>
               <button
                 onClick={() => onHandleCharity(true)}
-                disabled={gameState.cash < Math.floor(financials.totalIncome * 0.1)}
-                className={`flex-1 px-4 py-3 font-semibold rounded-xl transition text-sm ${gameState.cash >= Math.floor(financials.totalIncome * 0.1) ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
+                disabled={gameState.cash < Math.floor(financials.monthlyTotalIncome * 0.1)}
+                className={`flex-1 px-4 py-3 font-semibold rounded-xl transition text-sm ${gameState.cash >= Math.floor(financials.monthlyTotalIncome * 0.1) ? 'bg-pink-600 hover:bg-pink-700 text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
               >
                 捐赠
               </button>
@@ -1264,7 +1282,7 @@ function App() {
       )}
 
       {/* Baby event — info only, no payment */}
-      {gameState?.currentSpecialEvent === 'baby' && (
+      {gameState?.currentSpecialEvent === 'baby' && !hasWon && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
           <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
             <div className="inline-flex items-center gap-1 px-3 py-1 bg-sky-100 text-sky-800 text-sm font-semibold rounded-full mb-3">
@@ -1280,7 +1298,7 @@ function App() {
                 <div className="bg-sky-50 rounded-xl p-4 mb-4 text-sm">
                   <div className="flex justify-between">
                     <span className="text-slate-700">新增月支出：</span>
-                    <span className="font-bold text-sky-600">+${gameState.professionData.childExpense.toLocaleString()}</span>
+                    <span className="font-bold text-sky-600">+${(gameState.professionData.childExpense * 4).toLocaleString()}</span>
                   </div>
                 </div>
               </>
@@ -1293,7 +1311,7 @@ function App() {
       )}
 
       {/* Dream event */}
-      {gameState?.currentSpecialEvent === 'dream' && gameState?.selectedDream && (
+      {gameState?.currentSpecialEvent === 'dream' && gameState?.selectedDream && !hasWon && (
         <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
           <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
             <div className="inline-flex items-center gap-1 px-3 py-1 bg-cyan-100 text-cyan-800 text-sm font-semibold rounded-full mb-3">
@@ -1323,20 +1341,24 @@ function App() {
       )}
 
       {/* Winner screen */}
-      {gameState?.currentSpecialEvent === 'winner' && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
-          <div className="bg-white rounded-2xl shadow-2xl max-w-md w-full p-8 text-center">
-            <div className="text-6xl mb-4">🎉</div>
-            <h2 className="text-3xl font-bold text-slate-800 mb-4">恭喜获胜！</h2>
-            <p className="text-slate-600 mb-6">你成功实现了财务自由，完成了梦想！</p>
-            <div className="bg-gradient-to-r from-yellow-50 to-cyan-50 rounded-xl p-4 mb-6 border border-yellow-200">
-              <p className="font-semibold text-slate-700">最终现金: ${gameState.cash.toLocaleString()}</p>
-              <p className="font-semibold text-slate-700">月现金流: ${financials.monthlyCashFlow.toLocaleString()}</p>
-              <p className="font-semibold text-slate-700">操作步数: {gameState.actionStep}</p>
+      {hasWon && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50 overflow-y-auto">
+          <div className="w-full max-w-5xl space-y-4">
+            <GameSummaryPanel
+              isVisible={hasWon}
+              title="恭喜获胜！"
+              subtitle={`你完成了「${gameState.selectedDream?.name || '梦想'}」，这局的财务路径已经整理好。`}
+              metrics={summaryMetrics}
+              highlights={summaryHighlights}
+              onRestart={handleRestartGame}
+            />
+            <div className="grid gap-4 lg:grid-cols-2">
+              <TradeRecapPanel trades={tradeRecapItems} title="本局交易复盘" maxItems={6} />
+              <RiskHintPanel hints={riskPanelItems} title="最终风险状态" />
             </div>
             <button
               onClick={() => { setShowActionLog(false); setShowFullLog(true); }}
-              className="w-full mb-3 px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition"
+              className="w-full px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition"
             >
               查看完整回溯报告
             </button>
@@ -1370,7 +1392,7 @@ function App() {
                 </div>
                 <div className="flex gap-3 mt-1 text-xs text-slate-500">
                   <span>步 {entry.step}</span>
-                  <span>现金流 ${entry.cashFlow.toLocaleString()}</span>
+                  <span>周现金流 ${entry.weeklyCashFlow.toLocaleString()}</span>
                   <span>被动收入 ${entry.passiveIncome.toLocaleString()}</span>
                 </div>
               </div>
@@ -1388,102 +1410,29 @@ function App() {
       )}
 
       {/* Loan dialog */}
-      {showLoanDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-slate-800">银行贷款</h3>
-              <button onClick={() => setShowLoanDialog(false)} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
-            </div>
-            <p className="text-slate-500 text-sm mb-4">贷款金额必须是1000的倍数，月利息为贷款金额的10%。</p>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-slate-700 mb-2">贷款金额</label>
-              <input
-                type="number"
-                inputMode="numeric"
-                min="0"
-                value={loanAmount}
-                onChange={e => setLoanAmount(e.target.value.replace(/[^0-9]/g, ''))}
-                placeholder="输入金额（如：5000）"
-                step="1000"
-                className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-orange-500"
-              />
-            </div>
-            {loanAmount && parseInt(loanAmount) > 0 && (
-              <div className="bg-orange-50 rounded-xl p-4 mb-4 text-sm space-y-1">
-                <div className="flex justify-between">
-                  <span className="text-slate-600">贷款金额：</span>
-                  <span className="font-semibold">${parseInt(loanAmount).toLocaleString()}</span>
-                </div>
-                <div className="flex justify-between text-red-600">
-                  <span>月利息：</span>
-                  <span className="font-semibold">${(parseInt(loanAmount) * 0.1).toLocaleString()}</span>
-                </div>
-              </div>
-            )}
-            {(() => {
-              if (!loanAmount || parseInt(loanAmount) <= 0) return null;
-              const check = canTakeLoan(gameState, parseInt(loanAmount));
-              if (!check.canTake) return (
-                <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4 text-sm text-red-700">{check.reason}</div>
-              );
-              return null;
-            })()}
-            <button
-              onClick={onTakeLoan}
-              disabled={!loanAmount || parseInt(loanAmount) <= 0 || parseInt(loanAmount) % 1000 !== 0 || !canTakeLoan(gameState, parseInt(loanAmount) || 0).canTake}
-              className={`w-full px-4 py-3 font-semibold rounded-xl transition ${loanAmount && parseInt(loanAmount) > 0 && parseInt(loanAmount) % 1000 === 0 && canTakeLoan(gameState, parseInt(loanAmount)).canTake ? 'bg-orange-600 hover:bg-orange-700 text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
-            >
-              确认贷款
-            </button>
-          </div>
-        </div>
+      {showLoanDialog && !hasWon && (
+        <LoanDialog
+          gameState={gameState}
+          title="银行贷款"
+          amount={loanAmount}
+          accent="orange"
+          onAmountChange={setLoanAmount}
+          onClose={() => setShowLoanDialog(false)}
+          onConfirm={onTakeLoan}
+        />
       )}
 
       {/* Opportunity loan dialog */}
-      {showOpportunityLoanDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
-            <div className="flex justify-between items-center mb-4">
-              <h3 className="text-xl font-bold text-slate-800">申请银行贷款</h3>
-              <button onClick={() => setShowOpportunityLoanDialog(false)} className="text-slate-400 hover:text-slate-600"><X size={24} /></button>
-            </div>
-            <p className="text-slate-500 text-sm mb-4">贷款金额必须是$1000的倍数，月利息为贷款金额的10%。</p>
-            <div className="mb-4">
-              <label className="block text-sm font-medium text-slate-700 mb-2">贷款金额</label>
-              <input
-                type="number"
-                inputMode="numeric"
-                min="0"
-                value={opportunityLoanAmount}
-                onChange={e => setOpportunityLoanAmount(e.target.value.replace(/[^0-9]/g, ''))}
-                placeholder="输入金额（如：5000）"
-                step="1000"
-                className="w-full px-4 py-3 border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            {opportunityLoanAmount && parseInt(opportunityLoanAmount) > 0 && (
-              <>
-                <div className="bg-blue-50 rounded-xl p-4 mb-4 text-sm space-y-1">
-                  <div className="flex justify-between"><span className="text-slate-600">贷款金额：</span><span className="font-semibold">${parseInt(opportunityLoanAmount).toLocaleString()}</span></div>
-                  <div className="flex justify-between text-red-600"><span>月利息：</span><span className="font-semibold">${(parseInt(opportunityLoanAmount) * 0.1).toLocaleString()}</span></div>
-                </div>
-                {!canTakeLoan(gameState, parseInt(opportunityLoanAmount)).canTake && (
-                  <div className="bg-red-50 border border-red-200 rounded-xl p-3 mb-4 text-sm text-red-700">
-                    {canTakeLoan(gameState, parseInt(opportunityLoanAmount)).reason}
-                  </div>
-                )}
-              </>
-            )}
-            <button
-              onClick={onTakeOpportunityLoan}
-              disabled={!opportunityLoanAmount || parseInt(opportunityLoanAmount) <= 0 || parseInt(opportunityLoanAmount) % 1000 !== 0 || !canTakeLoan(gameState, parseInt(opportunityLoanAmount) || 0).canTake}
-              className={`w-full px-4 py-3 font-semibold rounded-xl transition ${opportunityLoanAmount && parseInt(opportunityLoanAmount) > 0 && parseInt(opportunityLoanAmount) % 1000 === 0 && canTakeLoan(gameState, parseInt(opportunityLoanAmount)).canTake ? 'bg-blue-600 hover:bg-blue-700 text-white' : 'bg-gray-200 text-gray-400 cursor-not-allowed'}`}
-            >
-              确认贷款
-            </button>
-          </div>
-        </div>
+      {showOpportunityLoanDialog && !hasWon && (
+        <LoanDialog
+          gameState={gameState}
+          title="申请银行贷款"
+          amount={opportunityLoanAmount}
+          accent="blue"
+          onAmountChange={setOpportunityLoanAmount}
+          onClose={() => setShowOpportunityLoanDialog(false)}
+          onConfirm={onTakeOpportunityLoan}
+        />
       )}
 
       {/* Restart confirm dialog */}
@@ -1562,15 +1511,15 @@ function App() {
             <div className="grid grid-cols-3 gap-2 text-xs">
               <div className="bg-slate-50 rounded-lg p-2 text-center">
                 <div className="text-slate-500">工资</div>
-                <div className="font-bold">${financials.salary.toLocaleString()}</div>
+                <div className="font-bold">${(financials.salary * 4).toLocaleString()}</div>
               </div>
               <div className={`rounded-lg p-2 text-center ${financials.passiveIncome > 0 ? 'bg-amber-50' : 'bg-slate-50'}`}>
                 <div className="text-slate-500">被动</div>
-                <div className={`font-bold ${financials.passiveIncome > 0 ? 'text-amber-600' : ''}`}>${financials.passiveIncome.toLocaleString()}</div>
+                <div className={`font-bold ${financials.passiveIncome > 0 ? 'text-amber-600' : ''}`}>${(financials.passiveIncome * 4).toLocaleString()}</div>
               </div>
               <div className="bg-slate-50 rounded-lg p-2 text-center">
                 <div className="text-slate-500">支出</div>
-                <div className="font-bold">${financials.totalExpenses.toLocaleString()}</div>
+                <div className="font-bold">${financials.monthlyTotalExpenses.toLocaleString()}</div>
               </div>
             </div>
             {leverageBlocked && (

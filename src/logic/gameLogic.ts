@@ -1,13 +1,20 @@
-import { GameState, GameSpace, Asset, ActionLogEntry, StockPrice } from './gameTypes';
+import { GameState, GameSpace, Asset, ActionLogEntry, StockPrice, BankruptcyLiquidationEntry } from './gameTypes';
 import { getRandomProfession, getTotalExpenses, Profession } from '../config/professions';
-import { getRandomSmallDealCard, getRandomBigDealCard, getRandomDoodadCard, SmallDealCard, BigDealCard, smallDealCards } from '../config/cards';
+import { SmallDealCard, BigDealCard, smallDealCards, bigDealCards, doodadCards } from '../config/cards';
 import { Dream } from '../config/dreams';
-import { getRandomMarketEvent, MarketEvent } from '../config/marketEvents';
+import { MarketEvent, marketEvents } from '../config/marketEvents';
 import { SmartUnemploymentSystem } from './SmartUnemploymentSystem';
 import { SmartMarketSystem } from './SmartMarketSystem';
-import { getAdjustedStockPrice, applyMarketTrendsToStockPrices } from './StockMarketIntegration';
+import {
+  chooseOpportunityDealType,
+  selectPacedBigDealCard,
+  selectPacedDoodadCard,
+  selectPacedMarketEvent,
+  selectPacedSmallDealCard,
+} from './gamePacing';
 
 export const MAX_LOAN_MULTIPLIER = 10;
+const STOCK_SYMBOLS = ['MYT4U', 'OK4U', 'MYJT', 'Stock'];
 
 const createRatRaceBoard = (): GameSpace[] => {
   const boardConfig = [
@@ -104,6 +111,7 @@ export const initialState = (profession: Profession | null = null, dream: Dream 
     inflationMultiplier: 1.0,
     mortgageMultiplier: 1.0,
     marketPrices: [...DEFAULT_STOCK_PRICES],
+    bankruptcyLiquidation: [],
     actionLog: [],
     actionStep: 0,
     isMultiplayer: false,
@@ -115,6 +123,43 @@ export const safeNum = (val: unknown, fallback: number = 0): number => {
   return isNaN(n) || !isFinite(n) ? fallback : n;
 };
 
+const normalizeKey = (value: unknown): string => String(value ?? '').trim().toLowerCase();
+
+const getStockSymbol = (tags: string[] = [], name: string = ''): string => {
+  const candidates = [...tags, name];
+  return STOCK_SYMBOLS.find(symbol =>
+    candidates.some(candidate => normalizeKey(candidate).includes(normalizeKey(symbol)))
+  ) || 'Stock';
+};
+
+const isStockLike = (item: Pick<Asset, 'category' | 'tags' | 'name'>): boolean => {
+  return normalizeKey(item.category) === 'stock' ||
+    (item.tags || []).some(tag => normalizeKey(tag) === 'stock' || STOCK_SYMBOLS.some(symbol => normalizeKey(tag) === normalizeKey(symbol))) ||
+    STOCK_SYMBOLS.some(symbol => normalizeKey(item.name).includes(normalizeKey(symbol)));
+};
+
+const findStockPriceEntry = (state: GameState, stockSymbol: string, tags: string[] = [], name: string = ''): StockPrice | undefined => {
+  const marketPrices = state.marketPrices || DEFAULT_STOCK_PRICES;
+  const normalizedSymbol = normalizeKey(stockSymbol);
+  const specificAliases = [stockSymbol, ...tags, name]
+    .map(normalizeKey)
+    .filter(alias => alias && alias !== 'stock');
+
+  const findByAlias = (aliases: string[]) => marketPrices.find(price => {
+    const priceAliases = [price.tag, price.symbol, ...(price.tags || [])].map(normalizeKey).filter(Boolean);
+    return priceAliases.some(alias => aliases.includes(alias));
+  });
+
+  return findByAlias([normalizedSymbol])
+    || findByAlias(specificAliases)
+    || findByAlias(['stock']);
+};
+
+const getCurrentStockPrice = (state: GameState, stockSymbol: string, tags: string[] = [], name: string = ''): number => {
+  const entry = findStockPriceEntry(state, stockSymbol, tags, name);
+  return safeNum(entry?.currentPrice ?? entry?.price, 10);
+};
+
 const addLog = (
   state: GameState,
   message: string,
@@ -122,19 +167,18 @@ const addLog = (
   type: 'positive' | 'negative' | 'neutral' = 'neutral'
 ): ActionLogEntry => {
   // 避免循环调用，直接计算基础财务数据
-  const safeChildren = safeNum(state.children);
   const safeProfessionData = state.professionData ?? {
     salary: 0, tax: 0, mortgage: 0, studentLoan: 0, otherExpenses: 0, childExpense: 0,
   };
   
   // 简单计算被动收入，避免递归
   const passiveIncome = (state.assets || []).reduce((sum, asset) => {
-    return sum + safeNum(asset?.monthlyIncome, 0);
+    return sum + safeNum(asset?.weeklyIncome, 0);
   }, 0);
   
   const salary = safeNum(safeProfessionData.salary);
   const totalIncome = salary + passiveIncome;
-  const monthlyCashFlow = totalIncome - safeNum(safeProfessionData.mortgage) - safeNum(safeProfessionData.otherExpenses);
+  const weeklyCashFlow = totalIncome - safeNum(safeProfessionData.mortgage) - safeNum(safeProfessionData.otherExpenses);
   
   return {
     id: `log_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
@@ -144,7 +188,7 @@ const addLog = (
     type,
     timestamp: new Date().toISOString(),
     passiveIncome,
-    monthlyCashFlow,
+    weeklyCashFlow,
   };
 };
 
@@ -154,11 +198,11 @@ export const calculateFinancials = (state: GameState) => {
   const safeMortgageMultiplier = safeNum(state.mortgageMultiplier, 1.0) || 1.0;
 
   const passiveIncome = (state.assets || []).reduce((sum, asset) => {
-    return sum + safeNum(asset?.monthlyIncome, 0);
+    return sum + safeNum(asset?.weeklyIncome, 0);
   }, 0);
 
   const loanInterest = (state.loans || []).reduce((sum, loan) => {
-    return sum + safeNum(loan?.monthlyInterest, 0);
+    return sum + safeNum(loan?.weeklyInterest, 0);
   }, 0);
 
   const safeProfessionData = state.professionData ?? {
@@ -172,21 +216,23 @@ export const calculateFinancials = (state: GameState) => {
     mortgage: adjustedMortgage,
   } as Profession;
 
-  const totalExpenses = getTotalExpenses(professionWithAdjustedMortgage, safeChildren, safeInflation) + loanInterest;
+  const weeklyTotalExpenses = getTotalExpenses(professionWithAdjustedMortgage, safeChildren, safeInflation) + loanInterest;
   const salary = safeNum(safeProfessionData.salary);
-  const totalIncome = salary + passiveIncome;
-  const monthlyCashFlow = totalIncome - totalExpenses;
+  const weeklyTotalIncome = salary + passiveIncome;
+  const weeklyCashFlow = weeklyTotalIncome - weeklyTotalExpenses;
   const safeCash = safeNum(state.cash);
 
   const totalLoans = (state.loans || []).reduce((sum, loan) => sum + safeNum(loan?.amount, 0), 0);
-  const weeklyCashFlow = monthlyCashFlow;
   const maxLoanAllowed = Math.max(0, weeklyCashFlow * MAX_LOAN_MULTIPLIER);
   const isOverLeveraged = maxLoanAllowed > 0 && totalLoans > maxLoanAllowed;
 
   return {
-    totalIncome: safeNum(totalIncome),
-    totalExpenses: safeNum(totalExpenses),
-    monthlyCashFlow: safeNum(monthlyCashFlow),
+    totalIncome: safeNum(weeklyTotalIncome),
+    totalExpenses: safeNum(weeklyTotalExpenses),
+    weeklyCashFlow: safeNum(weeklyCashFlow),
+    monthlyCashFlow: safeNum(weeklyCashFlow * 4),
+    monthlyTotalIncome: safeNum(weeklyTotalIncome * 4),
+    monthlyTotalExpenses: safeNum(weeklyTotalExpenses * 4),
     passiveIncome: safeNum(passiveIncome),
     loanInterest: safeNum(loanInterest),
     salary: safeNum(salary),
@@ -197,6 +243,8 @@ export const calculateFinancials = (state: GameState) => {
     isOverLeveraged,
   };
 };
+
+export type Financials = ReturnType<typeof calculateFinancials>;
 
 export const canEscapeRatRace = (state: GameState): boolean => {
   const { passiveIncome, totalExpenses } = calculateFinancials(state);
@@ -225,12 +273,12 @@ export const escapeToFastTrack = (state: GameState): GameState => {
 };
 
 export const handlePayday = (state: GameState): GameState => {
-  const { monthlyCashFlow } = calculateFinancials(state);
+  const { weeklyCashFlow } = calculateFinancials(state);
   return {
     ...state,
     assets: [...state.assets],
     loans: [...state.loans],
-    cash: state.cash + monthlyCashFlow,
+    cash: state.cash + weeklyCashFlow,
   };
 };
 
@@ -239,9 +287,9 @@ export const canTakeLoan = (state: GameState, amount: number): { canTake: boolea
     return { canTake: false, reason: '贷款金额必须是$1000的倍数' };
   }
 
-  const { monthlyCashFlow, totalLoans, maxLoanAllowed } = calculateFinancials(state);
+  const { weeklyCashFlow, totalLoans, maxLoanAllowed } = calculateFinancials(state);
 
-  if (monthlyCashFlow <= 0) {
+  if (weeklyCashFlow <= 0) {
     return { canTake: false, reason: '您的现金流不足以覆盖贷款利息，银行拒绝了您的申请' };
   }
 
@@ -254,10 +302,10 @@ export const canTakeLoan = (state: GameState, amount: number): { canTake: boolea
     };
   }
 
-  const newLoanInterest = amount * 0.1;
-  const futureMonthlyFlow = monthlyCashFlow - newLoanInterest;
+  const newLoanInterest = (amount * 0.1) / 4;
+  const futureWeeklyFlow = weeklyCashFlow - newLoanInterest;
 
-  if (futureMonthlyFlow < 0) {
+  if (futureWeeklyFlow < 0) {
     return { canTake: false, reason: '您的现金流不足以覆盖贷款利息，银行拒绝了您的申请' };
   }
 
@@ -273,7 +321,7 @@ export const takeLoan = (state: GameState, amount: number): GameState => {
   const newLoan = {
     id: `loan_${Date.now()}`,
     amount: amount,
-    monthlyInterest: amount * 0.1,
+    weeklyInterest: (amount * 0.1) / 4,
     takenDate: new Date().toISOString(),
   };
 
@@ -295,7 +343,7 @@ export const repayLoan = (state: GameState, loanId: string): GameState => {
     return state;
   }
 
-  const logEntry = addLog(state, `还清贷款 $${loan.amount.toLocaleString()}，月利息减少 $${loan.monthlyInterest.toLocaleString()}`, -loan.amount, 'neutral');
+  const logEntry = addLog(state, `还清贷款 $${loan.amount.toLocaleString()}，月利息减少 $${(loan.weeklyInterest * 4).toLocaleString()}`, -loan.amount, 'neutral');
 
   return {
     ...state,
@@ -310,49 +358,114 @@ export const repayLoan = (state: GameState, loanId: string): GameState => {
 export const handleBankruptcy = (state: GameState): GameState => {
   let currentCash = safeNum(state.cash);
   let remainingAssets = [...(state.assets || [])];
-  let logs: ActionLogEntry[] = [];
+  const logs: ActionLogEntry[] = [];
+  const liquidation: BankruptcyLiquidationEntry[] = [];
 
-  // 1. 自动变卖资产逻辑
-  while (currentCash < 0 && remainingAssets.length > 0) {
-    // 优先卖出没有贷款的资产或高价值资产（这里可以根据你的策略调整）
-    const assetIndex = 0; 
-    const assetToSell = remainingAssets[assetIndex];
-    
-    // 计算售价（基于当前市场事件或初始成本）
-    const salePrice = calculateSalePrice(assetToSell, state, state.currentEvent || {});
-    currentCash += salePrice;
-    
-    const logEntry = addLog(
-      state, 
-      `破产清算：自动变卖资产「${assetToSell.name}」，获得现金 $${salePrice.toLocaleString()}`, 
-      salePrice, 
-      'positive'
-    );
-    logs.push(logEntry);
-
-    // 移除资产
-    remainingAssets.splice(assetIndex, 1);
+  if (currentCash >= 0) {
+    return { ...state, bankruptcyLiquidation: [] };
   }
 
-  // 2. 构造初步的新状态
-  let newState: GameState = {
+  const getLiquidationValue = (asset: Asset) => calculateSalePrice(asset, state, state.currentEvent || {});
+
+  while (currentCash < 0 && remainingAssets.length > 0) {
+    const deficit = Math.abs(currentCash);
+    const stockIndex = remainingAssets.findIndex(asset => {
+      if (!isStockLike(asset)) return false;
+      const stockSymbol = asset.symbol || getStockSymbol(asset.tags, asset.name);
+      const currentPrice = getCurrentStockPrice(state, stockSymbol, asset.tags, asset.name);
+      return safeNum(asset.shares, 0) > 0 && currentPrice > 0;
+    });
+
+    if (stockIndex >= 0) {
+      const stockAsset = remainingAssets[stockIndex];
+      const stockSymbol = stockAsset.symbol || getStockSymbol(stockAsset.tags, stockAsset.name);
+      const currentPrice = getCurrentStockPrice(state, stockSymbol, stockAsset.tags, stockAsset.name);
+      const currentShares = Math.floor(safeNum(stockAsset.shares, 0));
+      const sharesToSell = Math.min(currentShares, Math.ceil(deficit / currentPrice));
+      const salePrice = Math.round(sharesToSell * currentPrice);
+      const remainingShares = currentShares - sharesToSell;
+
+      currentCash += salePrice;
+      liquidation.push({
+        assetId: stockAsset.id,
+        assetName: stockAsset.name,
+        salePrice,
+        sharesSold: sharesToSell,
+        remainingShares,
+        weeklyIncomeLost: remainingShares > 0 ? 0 : safeNum(stockAsset.weeklyIncome),
+        reason: `按当前市场价 $${currentPrice.toLocaleString()} 自动卖出股票`,
+      });
+      logs.push(addLog(
+        state,
+        `破产清算：自动卖出「${stockAsset.name}」${sharesToSell} 股 @$${currentPrice.toLocaleString()}，获得现金 $${salePrice.toLocaleString()}`,
+        salePrice,
+        'positive'
+      ));
+
+      if (remainingShares > 0) {
+        const keepRatio = remainingShares / currentShares;
+        remainingAssets[stockIndex] = {
+          ...stockAsset,
+          shares: remainingShares,
+          cost: Math.round(safeNum(stockAsset.cost) * keepRatio),
+          downPayment: Math.round(safeNum(stockAsset.downPayment) * keepRatio),
+          sharePrice: currentPrice,
+          weeklyIncome: 0,
+        };
+      } else {
+        remainingAssets.splice(stockIndex, 1);
+      }
+      continue;
+    }
+
+    const rankedAssets = remainingAssets
+      .map((asset, index) => ({
+        asset,
+        index,
+        salePrice: getLiquidationValue(asset),
+        incomeLoss: safeNum(asset.weeklyIncome),
+      }))
+      .filter(item => item.salePrice > 0)
+      .sort((a, b) => {
+        const aNoIncome = a.incomeLoss <= 0 ? 0 : 1;
+        const bNoIncome = b.incomeLoss <= 0 ? 0 : 1;
+        if (aNoIncome !== bNoIncome) return aNoIncome - bNoIncome;
+        if (a.salePrice >= deficit && b.salePrice >= deficit && a.incomeLoss !== b.incomeLoss) {
+          return a.incomeLoss - b.incomeLoss;
+        }
+        return b.salePrice - a.salePrice;
+      });
+
+    const nextAsset = rankedAssets[0];
+    if (!nextAsset) break;
+
+    currentCash += nextAsset.salePrice;
+    liquidation.push({
+      assetId: nextAsset.asset.id,
+      assetName: nextAsset.asset.name,
+      salePrice: nextAsset.salePrice,
+      weeklyIncomeLost: nextAsset.incomeLoss,
+      reason: nextAsset.incomeLoss <= 0 ? '优先清算不产生正现金流的资产' : '清算可覆盖现金缺口的资产',
+    });
+    logs.push(addLog(
+      state,
+      `破产清算：自动变卖资产「${nextAsset.asset.name}」，获得现金 $${nextAsset.salePrice.toLocaleString()}`,
+      nextAsset.salePrice,
+      'positive'
+    ));
+    remainingAssets.splice(nextAsset.index, 1);
+  }
+
+  const newState: GameState = {
     ...state,
     cash: currentCash,
     assets: remainingAssets,
+    bankruptcyLiquidation: liquidation,
     actionLog: [...(state.actionLog || []), ...logs],
+    actionStep: (state.actionStep || 0) + logs.length,
   };
 
-  // 🛠️ 关键修复：显式调用财务计算函数
-  // 只有重新调用 calculateFinancials，被移除资产的 weeklyIncome 才会从总现金流中扣除
-  const updatedFinancials = calculateFinancials(newState);
-
-  // 3. 返回最终对齐后的状态
-  return {
-    ...newState,
-    // 确保 UI 上显示的月现金流（或周现金流）是即时更新后的
-    // 如果你的 GameState 结构中直接存储了这些字段，请在此同步
-    ...updatedFinancials 
-  };
+  return newState;
 };
 
 export const rollDice = (state: GameState, diceCount: number = 1): GameState => {
@@ -438,8 +551,8 @@ export const rollDice = (state: GameState, diceCount: number = 1): GameState => 
   let tempState = { ...newState };
 
   if (paydayCount > 0) {
-    const { monthlyCashFlow } = calculateFinancials(tempState);
-    const safeWCF = safeNum(monthlyCashFlow);
+    const { weeklyCashFlow } = calculateFinancials(tempState);
+    const safeWCF = safeNum(weeklyCashFlow);
 
     // 循环处理每一个经过的发薪点
     for (let j = 0; j < paydayCount; j++) {
@@ -483,17 +596,22 @@ export const rollDice = (state: GameState, diceCount: number = 1): GameState => 
   const landedSpace = newState.gameBoard[newPosition]; 
 
   switch (landedSpace.type) {
-    case 'Opportunity':
-      newState = { ...newState, assets: [...newState.assets], loans: [...newState.loans], currentEvent: getRandomSmallDealCard(), canRoll: false };
+    case 'Opportunity': {
+      const dealType = chooseOpportunityDealType(newState);
+      const currentEvent = dealType === 'big'
+        ? selectPacedBigDealCard(newState, bigDealCards)
+        : selectPacedSmallDealCard(newState, smallDealCards);
+      newState = { ...newState, assets: [...newState.assets], loans: [...newState.loans], currentEvent, canRoll: false };
       break;
+    }
     case 'Doodad':
-      newState = { ...newState, assets: [...newState.assets], loans: [...newState.loans], currentEvent: getRandomDoodadCard(), canRoll: false };
+      newState = { ...newState, assets: [...newState.assets], loans: [...newState.loans], currentEvent: selectPacedDoodadCard(newState, doodadCards), canRoll: false };
       break;
     case 'BigDeal':
-      newState = { ...newState, assets: [...newState.assets], loans: [...newState.loans], currentEvent: getRandomBigDealCard(), canRoll: false };
+      newState = { ...newState, assets: [...newState.assets], loans: [...newState.loans], currentEvent: selectPacedBigDealCard(newState, bigDealCards), canRoll: false };
       break;
 case 'Market': {
-      const marketEvent = getRandomMarketEvent();
+      const marketEvent = selectPacedMarketEvent(newState, marketEvents);
       let updatedPrices = [...newState.marketPrices]; // 保持不可变性
 
       // 只要有 effect，就尝试更新价格
@@ -556,19 +674,21 @@ export const canBuyOpportunity = (state: GameState): boolean => {
 
 export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCard): GameState => {
   const safeCash = safeNum(state.cash);
-  const safeDownPayment = safeNum(card.downPayment);
-
-  if (safeCash < safeDownPayment) {
-    return state;
-  }
-
   const { isOverLeveraged } = calculateFinancials(state);
   if (isOverLeveraged) {
     return state;
   }
 
-  const isStock = (card.tags || []).some(t => t.toLowerCase() === 'stock');
+  const isStock = isStockLike(card);
   const stockData = (card as SmallDealCard).stockData;
+  const stockSymbol = getStockSymbol(card.tags, card.name);
+  const stockPrice = isStock ? getCurrentStockPrice(state, stockSymbol, card.tags, card.name) : 0;
+  const stockShares = isStock ? Math.max(1, Math.floor(safeNum(stockData?.shares, 1))) : 0;
+  const safeDownPayment = isStock ? Math.round(stockShares * stockPrice) : safeNum(card.downPayment);
+
+  if (safeCash < safeDownPayment) {
+    return state;
+  }
 
   // 确保所有必需的属性都有值
   const newAsset: Asset = {
@@ -577,18 +697,21 @@ export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCa
     category: card.category || 'real_estate',
     subtype: card.subtype || 'Income',
     tags: [...(card.tags || [])],
-    cost: safeNum(card.totalCost),
+    cost: isStock ? safeDownPayment : safeNum(card.totalCost),
     downPayment: safeDownPayment,
-    weeklyIncome: safeNum(card.monthlyIncome, 0) / 4, // 月收益转周收益
+    weeklyIncome: isStock ? 0 : safeNum(card.monthlyIncome, 0) / 4, // 股票靠价差盈利，不产生现金流
     purchaseDate: new Date().toISOString(),
-    ...(isStock && stockData ? {
-      symbol: card.symbol || card.name,
-      shares: stockData.shares || 0,
-      sharePrice: stockData.sharePrice || 0,
+    ...(isStock ? {
+      symbol: stockSymbol,
+      shares: stockShares,
+      sharePrice: stockPrice,
     } : {}),
   };
 
-  const logEntry = addLog(state, `买入「${card.name}」首付 $${safeDownPayment.toLocaleString()}，月收益 ${card.monthlyIncome >= 0 ? '+' : ''}$${card.monthlyIncome}`, -safeDownPayment, 'negative');
+  const logMessage = isStock
+    ? `买入「${card.name}」${stockShares} 股 @$${stockPrice.toLocaleString()}，共 $${safeDownPayment.toLocaleString()}，月收益 $0`
+    : `买入「${card.name}」首付 $${safeDownPayment.toLocaleString()}，月收益 ${card.monthlyIncome >= 0 ? '+' : ''}$${card.monthlyIncome}`;
+  const logEntry = addLog(state, logMessage, -safeDownPayment, 'negative');
 
   return {
     ...state,
@@ -662,7 +785,7 @@ export const getMarketSystem = (): SmartMarketSystem => {
 export const recordInvestmentBehavior = (state: GameState, investmentType: 'high' | 'medium' | 'low', success: boolean): void => {
   const system = getUnemploymentSystem();
   system.recordPlayerBehavior({
-    type: success ? 'successful_investment' : 'failed_investment',
+    type: success ? 'conservative_move' : 'poor_decision',
     riskLevel: investmentType,
     timestamp: Date.now()
   });
@@ -674,7 +797,7 @@ export const recordInvestmentBehavior = (state: GameState, investmentType: 'high
 export const recordLoanBehavior = (state: GameState, amount: number, isRepayment: boolean): void => {
   const system = getUnemploymentSystem();
   system.recordPlayerBehavior({
-    type: isRepayment ? 'loan_repayment' : 'loan_taken',
+    type: isRepayment ? 'conservative_move' : 'high_risk_investment',
     riskLevel: amount > 50000 ? 'high' : amount > 20000 ? 'medium' : 'low',
     timestamp: Date.now()
   });
@@ -752,8 +875,8 @@ export const handleCharity = (state: GameState, donated: boolean): GameState => 
     };
   }
 
-  const { totalIncome } = calculateFinancials(state);
-  const safeTotalIncome = safeNum(totalIncome);
+  const { monthlyTotalIncome } = calculateFinancials(state);
+  const safeTotalIncome = safeNum(monthlyTotalIncome);
   const donationAmount = Math.floor(safeTotalIncome * 0.1);
   const safeCash = safeNum(state.cash);
   const logEntry = addLog(state, `慈善捐赠 $${donationAmount.toLocaleString()}，获得3回合双骰子`, -donationAmount, 'negative');
@@ -796,7 +919,7 @@ export const handleBaby = (state: GameState): GameState => {
   };
 
   // 立即触发全量财务计算，检查由于支出增加是否导致杠杆破裂
-  const { monthlyCashFlow: weeklyCashFlow, isOverLeveraged } = calculateFinancials(newState);
+  const { weeklyCashFlow, isOverLeveraged } = calculateFinancials(newState);
   
   const logMessage = `家庭添丁！孩子数量 ${newChildren}，周支出增加 $${childExpense.toLocaleString()}${isOverLeveraged ? '。警告：您的现金流已不足以支撑当前贷款杠杆！' : ''}`;
   const logEntry = addLog(newState, logMessage, 0, 'negative');
@@ -872,8 +995,12 @@ export const getSpaceLabel = (spaceType: string): string => {
 };
 
 export const getMarketPrice = (state: GameState, tag: string): number => {
-  const entry = (state.marketPrices || []).find(p => p.tag.toLowerCase() === tag.toLowerCase());
-  return safeNum(entry?.price, 10);
+  return getCurrentStockPrice(state, tag);
+};
+
+export const getOpportunityStockPrice = (state: GameState, card: SmallDealCard | BigDealCard): number => {
+  const stockSymbol = getStockSymbol(card.tags, card.name);
+  return getCurrentStockPrice(state, stockSymbol, card.tags, card.name);
 };
 
 export const updateMarketPrices = (
@@ -889,9 +1016,10 @@ export const updateMarketPrices = (
   return currentPrices.map(stock => {
     // 1. 匹配逻辑：
     // 优先匹配具体的股票代码 (symbol)，其次匹配标签 (tags)
-    const nameMatch = targetName && stock.symbol === targetName;
-    const tagMatch = tags.length > 0 && stock.tags?.some(t => 
-      tags.map(incomingTag => incomingTag.toLowerCase()).includes(t.toLowerCase())
+    const stockAliases = [stock.tag, stock.symbol, ...(stock.tags || [])].filter(Boolean).map(t => String(t).toLowerCase());
+    const nameMatch = targetName && stockAliases.includes(targetName.toLowerCase());
+    const tagMatch = tags.length > 0 && tags.some(incomingTag =>
+      stockAliases.includes(incomingTag.toLowerCase())
     );
 
     if (nameMatch || tagMatch) {
@@ -899,9 +1027,9 @@ export const updateMarketPrices = (
       // 如果卡片定义了固定价格 (fixedPrice)，则直接使用；否则在当前价基础上乘倍率
       const newPrice = fixedPrice !== undefined 
         ? fixedPrice 
-        : Math.round(stock.currentPrice * multiplier);
+        : Math.round(safeNum(stock.currentPrice ?? stock.price, 0) * multiplier);
       
-      return { ...stock, currentPrice: newPrice };
+      return { ...stock, price: newPrice, currentPrice: newPrice };
     }
 
     // 不匹配的股票保持原样，不做任何修改
@@ -913,13 +1041,9 @@ export const buyStockShares = (state: GameState, assetId: string, sharesToBuy: n
   const asset = state.assets.find(a => a.id === assetId);
   if (!asset || sharesToBuy <= 0) return state;
 
-  const priceTag = (asset.tags || []).find(t => ['Stock', 'MYT4U', 'OK4U', 'MYJT'].includes(t)) || 'Stock';
-  
-  // 应用市场趋势到股票价格
-  const marketSystem = new SmartMarketSystem();
-  const adjustedPrice = getAdjustedStockPrice(state, priceTag, marketSystem);
-  
-  const totalCost = Math.round(sharesToBuy * adjustedPrice);
+  const stockSymbol = asset.symbol || getStockSymbol(asset.tags, asset.name);
+  const currentPrice = getCurrentStockPrice(state, stockSymbol, asset.tags, asset.name);
+  const totalCost = Math.round(sharesToBuy * currentPrice);
 
   if (safeNum(state.cash) < totalCost) return state;
 
@@ -928,10 +1052,11 @@ export const buyStockShares = (state: GameState, assetId: string, sharesToBuy: n
     shares: (asset.shares ?? 0) + sharesToBuy,
     cost: asset.cost + totalCost,
     downPayment: asset.downPayment + totalCost,
-    sharePrice: adjustedPrice,
+    weeklyIncome: 0,
+    sharePrice: currentPrice,
   };
 
-  const logEntry = addLog(state, `买入「${asset.name}」${sharesToBuy} 股 @$${adjustedPrice}，共 $${totalCost.toLocaleString()}`, -totalCost, 'negative');
+  const logEntry = addLog(state, `买入「${asset.name}」${sharesToBuy} 股 @$${currentPrice.toLocaleString()}，共 $${totalCost.toLocaleString()}`, -totalCost, 'negative');
 
   return {
     ...state,
@@ -949,24 +1074,9 @@ export const sellStockShares = (state: GameState, assetId: string, sharesToSell:
   const currentShares = asset.shares ?? 0;
   if (sharesToSell > currentShares) return state;
 
-  // --- 关键修复开始 ---
-  
-  // 1. 查找当前股票在全局市场中的实时单价
-  // 优先匹配 symbol (如 MYJT)，如果没有则看标签
-  const marketPriceEntry = state.marketPrices?.find(p => 
-    p.symbol === asset.name || (asset.tags || []).includes(p.symbol)
-  );
-  
-  // 如果没找到市场价，则退而求其次使用资产初始买入价（保底）
-  // 应用市场趋势调整
-  const marketSystem = new SmartMarketSystem();
-  const basePrice = marketPriceEntry ? marketPriceEntry.currentPrice : (asset.sharePrice || 0);
-  const currentPrice = marketSystem.applyTrendToPrice(basePrice, 'Stock');
-  
-  // 2. 计算本次卖出的总收入
+  const stockSymbol = asset.symbol || getStockSymbol(asset.tags, asset.name);
+  const currentPrice = getCurrentStockPrice(state, stockSymbol, asset.tags, asset.name);
   const totalRevenue = Math.round(sharesToSell * currentPrice);
-  
-  // --- 关键修复结束 ---
 
   const remainingShares = currentShares - sharesToSell;
   const logEntry = addLog(
@@ -978,15 +1088,13 @@ export const sellStockShares = (state: GameState, assetId: string, sharesToSell:
 
   // 处理全部卖完的情况
   if (remainingShares <= 0) {
-    const newState = {
+    return {
       ...state,
       cash: state.cash + totalRevenue,
       assets: state.assets.filter(a => a.id !== assetId),
       actionLog: [...(state.actionLog || []), logEntry],
       actionStep: (state.actionStep || 0) + 1,
     };
-    // 别忘了我们之前说的：卖出资产后重算财务数据，防止被动收入（分红等）残余
-    return { ...newState, ...calculateFinancials(newState) };
   }
 
   // 处理部分卖出的情况（按比例缩减成本和首付）
@@ -996,7 +1104,7 @@ export const sellStockShares = (state: GameState, assetId: string, sharesToSell:
     shares: remainingShares,
     cost: Math.round(remainingShares * avgCostPerShare),
     downPayment: Math.round(remainingShares * avgCostPerShare),
-    // 记录卖出时的成交价
+    weeklyIncome: 0,
     sharePrice: currentPrice, 
   };
 
@@ -1008,8 +1116,7 @@ export const sellStockShares = (state: GameState, assetId: string, sharesToSell:
     actionStep: (state.actionStep || 0) + 1,
   };
 
-  // 同样重算财务数据
-  return { ...finalState, ...calculateFinancials(finalState) };
+  return finalState;
 };
 
 export const handleMarketEvent = (state: GameState, soldAssetId?: string, salePrice?: number): GameState => {
@@ -1019,7 +1126,6 @@ export const handleMarketEvent = (state: GameState, soldAssetId?: string, salePr
   let newCash = safeCash;
   let newAssets = [...(state.assets || [])];
   let newMortgageMultiplier = safeNum(state.mortgageMultiplier, 1.0) || 1.0;
-  let newMarketPrices = [...(state.marketPrices || [])];
   const newLogEntries: ActionLogEntry[] = [];
 
   // 1. 处理手动出售资产
@@ -1053,56 +1159,39 @@ export const handleMarketEvent = (state: GameState, soldAssetId?: string, salePr
   }
 
   // 3. 处理全局宏观经济（加息/通胀）
-  if (marketEvent?.type === 'global_macro' && marketEvent?.globalMacro) {
+  if (marketEvent?.globalMacro) {
     const { impact, changeRate } = marketEvent.globalMacro;
     if (impact === 'mortgage') {
       newMortgageMultiplier = Math.round(newMortgageMultiplier * safeNum(changeRate, 1.0) * 100) / 100;
       newLogEntries.push(addLog(state, `加息：房贷倍率升至 ×${newMortgageMultiplier}`, 0, 'negative'));
     }
-  }
-
-  // 4. 🚀 关键修复：支持固定价和特定名称的价格更新
-  if (marketEvent?.effect) {
-    const { assetTags, assetName, priceMultiplier, fixedPrice } = marketEvent.effect;
-    // 只有当存在更新指令时才调用
-    if (assetTags || assetName || fixedPrice || priceMultiplier) {
-      newMarketPrices = updateMarketPrices(
-        state, 
-        assetTags || [], 
-        priceMultiplier || 1.0, 
-        fixedPrice, 
-        assetName
-      );
+    if (impact === 'expenses') {
+      const nextInflation = Math.round((safeNum(state.inflationMultiplier, 1.0) || 1.0) * safeNum(changeRate, 1.0) * 100) / 100;
+      newLogEntries.push(addLog(state, `通货膨胀：生活支出倍率升至 ×${nextInflation}`, 0, 'negative'));
     }
   }
 
-  const newInflation = marketEvent?.inflationEffect
-    ? (safeNum(state.inflationMultiplier, 1.0) || 1.0) * 1.1
-    : (safeNum(state.inflationMultiplier, 1.0) || 1.0);
+  const newInflation = marketEvent?.globalMacro?.impact === 'expenses'
+    ? Math.round((safeNum(state.inflationMultiplier, 1.0) || 1.0) * safeNum(marketEvent.globalMacro.changeRate, 1.0) * 100) / 100
+    : marketEvent?.inflationEffect
+      ? (safeNum(state.inflationMultiplier, 1.0) || 1.0) * 1.1
+      : (safeNum(state.inflationMultiplier, 1.0) || 1.0);
 
  if (marketEvent?.inflationEffect) {
       newLogEntries.push(addLog(state, '通货膨胀：月支出增加 10%', 0, 'negative'));
     }
 
-    // 构造中间状态并重算财务
-    let nextState: GameState = {
+    return {
       ...state,
       assets: newAssets,
       cash: newCash,
       inflationMultiplier: newInflation,
       mortgageMultiplier: newMortgageMultiplier,
-      marketPrices: newMarketPrices,
+      marketPrices: state.marketPrices || [...DEFAULT_STOCK_PRICES],
       currentEvent: null,
       canRoll: true,
       actionLog: [...(state.actionLog || []), ...newLogEntries],
       actionStep: (state.actionStep || 0) + 1,
-    };
-
-    const finalFinancials = calculateFinancials(nextState);
-
-    return {
-      ...nextState,
-      ...finalFinancials
     };
 }; // <--- 确保这个大括号和分号存在，用来结束 handleMarketEvent
   
@@ -1170,24 +1259,13 @@ export const getAffectedAssets = (state: GameState, marketEvent: any) => {
 };
 
 export const calculateSalePrice = (asset: Asset, state: GameState, marketEvent: any): number => {
-  // 1. 优先逻辑：如果是股票 (Stock)，必须从全局实时价格表 marketPrices 中查询最新价
-  const isStock = asset.subtype === 'stock' || (asset.tags || []).some(t => 
-    ['Stock', 'stock', 'MYJT', 'OK4U', 'MYT4U'].includes(t)
-  );
-
-  if (isStock) {
-    const marketPriceEntry = state.marketPrices?.find(p => 
-      p.symbol === asset.name || (asset.tags || []).includes(p.symbol)
-    );
-    
-    if (marketPriceEntry) {
-      // 实时卖出总价 = 持有股数 * 当前市场单价
-      const shares = safeNum(asset.shares, 0);
-      return shares > 0 ? shares * marketPriceEntry.currentPrice : marketPriceEntry.currentPrice;
-    }
+  if (isStockLike(asset)) {
+    const stockSymbol = asset.symbol || getStockSymbol(asset.tags, asset.name);
+    const currentPrice = getCurrentStockPrice(state, stockSymbol, asset.tags, asset.name);
+    const shares = safeNum(asset.shares, 0);
+    return Math.round((shares > 0 ? shares : 1) * currentPrice);
   }
 
-  // 2. 次优逻辑：如果是房地产或企业，检查当前市场事件是否有特殊出价 (如固定收购价)
   const effect = marketEvent?.effect;
   if (effect) {
     if (effect.fixedPrice) return safeNum(effect.fixedPrice);
@@ -1195,14 +1273,10 @@ export const calculateSalePrice = (asset: Asset, state: GameState, marketEvent: 
     if (effect.fixedBuyout) return safeNum(effect.fixedBuyout);
     
     if (effect.priceMultiplier) {
-      const basePrice = asset.shares && asset.sharePrice
-        ? asset.shares * asset.sharePrice
-        : safeNum(asset.cost);
-      return Math.floor(basePrice * safeNum(effect.priceMultiplier, 1));
+      return Math.floor(safeNum(asset.cost) * safeNum(effect.priceMultiplier, 1));
     }
   }
 
-  // 3. 保底逻辑：如果没有匹配的市场价或事件，返回资产的初始成本/买入价
   return safeNum(asset.cost);
 };
 

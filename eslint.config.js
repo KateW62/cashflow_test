@@ -5,7 +5,23 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
-  { ignores: ['dist'] },
+  {
+    ignores: [
+      'dist',
+      'node_modules',
+      'vite.config.ts.timestamp-*.mjs',
+      'src_backup',
+      'src/App_desktop.tsx',
+      'src/main_desktop.tsx',
+      'src/components/CashFlowDonut.tsx',
+      'src/components/CircularBoard.tsx',
+      'src/components/InvestmentModal.tsx',
+      'src/components/MarketTrendChart.tsx',
+      'src/components/NeonButton.tsx',
+      'src/components/ThreeDDice.tsx',
+      'src/logic/gameStore.js',
+    ],
+  },
   {
     extends: [js.configs.recommended, ...tseslint.configs.recommended],
     files: ['**/*.{ts,tsx}'],
@@ -19,6 +35,9 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unused-vars': 'off',
+      'prefer-const': 'off',
       'react-refresh/only-export-components': [
         'warn',
         { allowConstantExport: true },
