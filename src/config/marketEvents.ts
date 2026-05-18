@@ -13,13 +13,22 @@ export interface MarketEvent {
     assetName?: string;
     assetCategory?: string;
     assetTags?: string[];
+    positiveTags?: string[];
+    negativeTags?: string[];
     priceMultiplier?: number;
+    incomeMultiplier?: number;
+    negativeIncomeMultiplier?: number;
+    durationTurns?: number;
     fixedPrice?: number;
     targetTag?: string;
     fixedBuyout?: number;
     offerPrice?: number;
     targetName?: string;
     autoSettle?: boolean;
+    purchaseDiscount?: number;
+    oneTimeCost?: number;
+    operationBoost?: number;
+    loanInterestModifier?: number;
   };
 }
 
@@ -59,6 +68,30 @@ export const marketEvents: MarketEvent[] = [
       assetName: 'OK4U',
       assetCategory: 'Stock',
       fixedPrice: 50,
+    },
+  },
+  {
+    id: 'stock_surge_myt4u',
+    name: 'MYT4U 新产品爆发',
+    description: 'MYT4U 发布的企业工具订阅量暴增，股价上涨至 $30！',
+    type: 'stock_surge',
+    allowSelling: true,
+    effect: {
+      assetName: 'MYT4U',
+      assetCategory: 'Stock',
+      fixedPrice: 30,
+    },
+  },
+  {
+    id: 'stock_crash_myt4u',
+    name: 'MYT4U 增长放缓',
+    description: 'MYT4U 用户增长不及预期，市场重新定价，股价跌至 $4。',
+    type: 'stock_crash',
+    allowSelling: true,
+    effect: {
+      assetName: 'MYT4U',
+      assetCategory: 'Stock',
+      fixedPrice: 4,
     },
   },
 
@@ -131,6 +164,208 @@ export const marketEvents: MarketEvent[] = [
     description: '市场情绪转向乐观，这通常是寻找新机会的好时机。',
     type: 'opportunity',
     allowSelling: false,
+  },
+  {
+    id: 'community_spending_rebound',
+    name: '社区消费回暖',
+    description: '居民线下消费回暖，社区服务、早餐和宠物消费都明显变好。',
+    type: 'opportunity',
+    allowSelling: false,
+    effect: {
+      assetTags: ['local_service', 'food', 'pet'],
+      incomeMultiplier: 1.2,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'ecommerce_promo_season',
+    name: '电商大促季',
+    description: '平台大促带来流量红利，电商、内容和线上业务迎来短期增长。',
+    type: 'specific_buyer',
+    allowSelling: true,
+    effect: {
+      assetTags: ['ecommerce', 'creator', 'online'],
+      incomeMultiplier: 1.3,
+      priceMultiplier: 1.3,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'ai_tools_adoption',
+    name: 'AI 工具普及',
+    description: 'AI 工具开始成为企业标配，AI、数字产品和 B2B 培训业务效率提升。',
+    type: 'opportunity',
+    allowSelling: false,
+    effect: {
+      assetTags: ['ai', 'digital_product', 'b2b'],
+      incomeMultiplier: 1.25,
+      durationTurns: 3,
+      operationBoost: 1.25,
+    },
+  },
+  {
+    id: 'travel_peak_season',
+    name: '旅游旺季',
+    description: '假期和城市活动带动出行需求，民宿与旅行相关资产收益走高。',
+    type: 'opportunity',
+    allowSelling: false,
+    effect: {
+      assetTags: ['travel', 'homestay'],
+      incomeMultiplier: 1.35,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'pet_consumption_growth',
+    name: '宠物消费增长',
+    description: '宠物服务需求快速增长，相关门店现金流和估值同步提升。',
+    type: 'specific_buyer',
+    allowSelling: true,
+    effect: {
+      assetTags: ['pet'],
+      incomeMultiplier: 1.25,
+      priceMultiplier: 1.2,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'automation_equipment_discount',
+    name: '自动化设备降价',
+    description: '自动化设备采购成本下降，新买入自动化类资产的首付压力降低。',
+    type: 'opportunity',
+    allowSelling: false,
+    effect: {
+      assetTags: ['automation', 'vending', 'laundry'],
+      purchaseDiscount: 0.15,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'labor_cost_rise',
+    name: '人力成本上涨',
+    description: '服务业人工成本上升，依赖人工的业务利润被压缩。',
+    type: 'inflation',
+    allowSelling: false,
+    effect: {
+      assetTags: ['service', 'food', 'pet', 'fitness'],
+      incomeMultiplier: 0.85,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'logistics_cost_rise',
+    name: '物流费用上涨',
+    description: '城市配送和仓储成本上涨，电商与外卖业务利润下降。',
+    type: 'inflation',
+    allowSelling: false,
+    effect: {
+      assetTags: ['ecommerce', 'delivery', 'logistics'],
+      incomeMultiplier: 0.8,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'platform_commission_hike',
+    name: '平台抽佣提高',
+    description: '平台提高抽佣比例，外卖、内容和平台型业务现金流承压。',
+    type: 'inflation',
+    allowSelling: false,
+    effect: {
+      assetTags: ['delivery', 'creator', 'platform'],
+      incomeMultiplier: 0.75,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'rent_price_rise',
+    name: '房租上涨',
+    description: '商铺租金上涨，线下门店和本地服务业务利润下降。',
+    type: 'global_macro',
+    allowSelling: false,
+    globalMacro: {
+      impact: 'expenses',
+      changeRate: 1.08,
+    },
+    effect: {
+      assetTags: ['local_service', 'coffee', 'fitness', 'laundry'],
+      incomeMultiplier: 0.85,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'policy_compliance_check',
+    name: '政策检查',
+    description: '教育、民宿等监管行业迎来合规检查，未准备好的资产会承压。',
+    type: 'inflation',
+    allowSelling: false,
+    effect: {
+      assetTags: ['education', 'homestay', 'regulated'],
+      incomeMultiplier: 0.8,
+      oneTimeCost: 1200,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'equipment_maintenance_wave',
+    name: '设备维护潮',
+    description: '自动化设备进入集中维护期，无人零售和洗衣房需要额外维护。',
+    type: 'inflation',
+    allowSelling: false,
+    effect: {
+      assetTags: ['automation', 'vending', 'laundry'],
+      incomeMultiplier: 0.85,
+      oneTimeCost: 900,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'brand_acquirer_appears',
+    name: '品牌收购方出现',
+    description: '区域品牌收购方正在寻找可复制的咖啡、内容和 AI 业务。',
+    type: 'specific_buyer',
+    allowSelling: true,
+    effect: {
+      assetTags: ['coffee', 'chain', 'creator', 'ai'],
+      priceMultiplier: 1.5,
+    },
+  },
+  {
+    id: 'local_store_buyer',
+    name: '社区店铺买家',
+    description: '本地买家愿意收购稳定经营的社区门店和服务工作室。',
+    type: 'specific_buyer',
+    allowSelling: true,
+    effect: {
+      assetTags: ['local_service', 'pet', 'fitness'],
+      priceMultiplier: 1.25,
+    },
+  },
+  {
+    id: 'consumer_downshift',
+    name: '消费降级',
+    description: '消费者更重视性价比，二手、低成本业务受益，高客单门店承压。',
+    type: 'opportunity',
+    allowSelling: false,
+    effect: {
+      assetTags: ['resale', 'low_cost', 'luxury', 'coffee'],
+      positiveTags: ['resale', 'low_cost'],
+      negativeTags: ['luxury', 'coffee'],
+      incomeMultiplier: 1.2,
+      negativeIncomeMultiplier: 0.85,
+      durationTurns: 3,
+    },
+  },
+  {
+    id: 'bank_credit_easing',
+    name: '银行信贷宽松',
+    description: '银行放宽小微企业贷款条件，下一次购买生意更容易融资。',
+    type: 'opportunity',
+    allowSelling: false,
+    effect: {
+      assetTags: ['business'],
+      loanInterestModifier: 0.85,
+      durationTurns: 3,
+    },
   }
 ];
 

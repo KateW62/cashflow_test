@@ -1,6 +1,6 @@
-import { ArrowDownRight, ArrowUpRight, ReceiptText, TrendingDown, TrendingUp } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Briefcase, LineChart, ReceiptText, TrendingDown, TrendingUp } from 'lucide-react';
 
-export type TradeRecapKind = 'buy' | 'sell' | 'dividend' | 'liquidation';
+export type TradeRecapKind = 'buy' | 'sell' | 'dividend' | 'liquidation' | 'operation' | 'market';
 
 export interface TradeRecapItem {
   id: string;
@@ -29,6 +29,8 @@ const kindLabels: Record<TradeRecapKind, string> = {
   sell: '卖出',
   dividend: '现金流',
   liquidation: '清算',
+  operation: '经营',
+  market: '市场',
 };
 
 function formatMoney(value: number, signed = false) {
@@ -40,6 +42,8 @@ function getKindStyle(kind: TradeRecapKind) {
   if (kind === 'buy') return 'bg-blue-50 text-blue-700 border-blue-100';
   if (kind === 'sell') return 'bg-green-50 text-green-700 border-green-100';
   if (kind === 'liquidation') return 'bg-red-50 text-red-700 border-red-100';
+  if (kind === 'operation') return 'bg-indigo-50 text-indigo-700 border-indigo-100';
+  if (kind === 'market') return 'bg-teal-50 text-teal-700 border-teal-100';
   return 'bg-amber-50 text-amber-700 border-amber-100';
 }
 
@@ -79,7 +83,13 @@ export function TradeRecapPanel({
           {visibleTrades.map(trade => {
             const isPositive = trade.realizedGain != null && trade.realizedGain > 0;
             const GainIcon = isPositive ? TrendingUp : TrendingDown;
-            const CashIcon = trade.kind === 'buy' ? ArrowDownRight : ArrowUpRight;
+            const CashIcon = trade.kind === 'operation'
+              ? Briefcase
+              : trade.kind === 'market'
+                ? LineChart
+                : trade.kind === 'buy'
+                  ? ArrowDownRight
+                  : ArrowUpRight;
 
             return (
               <article key={trade.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3">
@@ -104,7 +114,7 @@ export function TradeRecapPanel({
 
                   <div className="shrink-0 text-left sm:text-right">
                     <div className="flex items-center gap-1 text-sm font-bold text-slate-800 sm:justify-end">
-                      <CashIcon size={15} className={trade.kind === 'buy' ? 'text-blue-500' : 'text-green-500'} />
+                      <CashIcon size={15} className={trade.kind === 'buy' ? 'text-blue-500' : trade.kind === 'operation' ? 'text-indigo-500' : trade.kind === 'market' ? 'text-teal-500' : 'text-green-500'} />
                       {formatMoney(trade.totalAmount)}
                     </div>
                     {trade.realizedGain != null && (

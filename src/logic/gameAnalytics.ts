@@ -1,9 +1,10 @@
 import type { ActionLogEntry, Asset, GameState, Loan, StockPrice } from './gameTypes';
+import { getAssetCashflowMultiplier } from './operationActions';
 
 const STOCK_SYMBOLS = ['MYT4U', 'OK4U', 'MYJT', 'Stock'];
 
 export type TradeDirection = 'buy' | 'sell';
-export type TradeKind = 'stock' | 'asset' | 'loan' | 'other';
+export type TradeKind = 'stock' | 'asset' | 'loan' | 'operation' | 'market' | 'other';
 export type RiskLevel = 'info' | 'warning' | 'danger';
 
 export interface TradeReplayEntry {
@@ -174,7 +175,9 @@ const calculateFinancials = (state: GameState): BasicFinancials => {
   const inflation = safeNumber(state.inflationMultiplier, 1) || 1;
   const mortgageMultiplier = safeNumber(state.mortgageMultiplier, 1) || 1;
   const salary = safeNumber(profession?.salary);
-  const passiveIncome = (state.assets || []).reduce((sum, asset) => sum + safeNumber(asset.weeklyIncome), 0);
+  const passiveIncome = (state.assets || []).reduce((sum, asset) =>
+    sum + safeNumber(asset.weeklyIncome) * getAssetCashflowMultiplier(state, asset)
+  , 0);
   const loanInterest = (state.loans || []).reduce((sum, loan: Loan) => sum + safeNumber(loan.weeklyInterest), 0);
   const baseExpenses = safeNumber(profession?.tax) +
     Math.floor(safeNumber(profession?.mortgage) * mortgageMultiplier) +
@@ -293,6 +296,36 @@ const parseTradeEntry = (log: ActionLogEntry, previousEntries: TradeReplayEntry[
     };
   }
 
+  const operationMatch = message.match(/经营动作：(.+?)(?:「(.+?)」)?，(.+)/);
+  if (operationMatch) {
+    return {
+      id: log.id,
+      step: log.step,
+      direction: 'buy',
+      kind: 'operation',
+      name: operationMatch[2] ? `${operationMatch[1]}：${operationMatch[2]}` : operationMatch[1],
+      amount: Math.abs(safeNumber(log.cashChange)),
+      message,
+      timestamp: log.timestamp,
+    };
+  }
+
+  const marketEffectMatch = message.match(/市场(?:影响|机会|压力)：(.+)/);
+  if (marketEffectMatch) {
+    const expenseMatch = message.match(/支出\s*\$?([\d,]+)/);
+    const amount = expenseMatch ? parseMoney(expenseMatch[1]) : Math.abs(safeNumber(log.cashChange));
+    return {
+      id: log.id,
+      step: log.step,
+      direction: log.cashChange > 0 ? 'sell' : 'buy',
+      kind: 'market',
+      name: marketEffectMatch[1],
+      amount,
+      message,
+      timestamp: log.timestamp,
+    };
+  }
+
   return null;
 };
 
@@ -305,7 +338,7 @@ export const summarizeTrades = (state: GameState): TradeReplaySummary => {
   const holdings = (state.assets || []).map<HoldingSummary>(asset => {
     const currentValue = getAssetCurrentValue(state, asset);
     const costBasis = safeNumber(asset.cost || asset.downPayment);
-    const weeklyIncome = safeNumber(asset.weeklyIncome);
+    const weeklyIncome = safeNumber(asset.weeklyIncome) * getAssetCashflowMultiplier(state, asset);
 
     return {
       id: asset.id,
@@ -324,10 +357,10 @@ export const summarizeTrades = (state: GameState): TradeReplaySummary => {
   });
 
   const totalBuyAmount = entries
-    .filter(entry => entry.direction === 'buy')
+    .filter(entry => entry.direction === 'buy' && (entry.kind === 'stock' || entry.kind === 'asset'))
     .reduce((sum, entry) => sum + entry.amount, 0);
   const totalSellAmount = entries
-    .filter(entry => entry.direction === 'sell')
+    .filter(entry => entry.direction === 'sell' && (entry.kind === 'stock' || entry.kind === 'asset'))
     .reduce((sum, entry) => sum + entry.amount, 0);
   const totalRealizedProfit = entries.reduce((sum, entry) => sum + safeNumber(entry.realizedProfit), 0);
   const totalUnrealizedProfit = holdings.reduce((sum, holding) => sum + holding.unrealizedProfit, 0);

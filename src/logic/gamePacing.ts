@@ -62,6 +62,10 @@ const getAssetKeyCandidates = (asset: Asset): string[] => {
     .filter(Boolean);
 };
 
+const hasActiveOperation = (state: GameState, type: string): boolean => {
+  return (state.operationEffects || []).some(effect => effect.type === type && effect.remainingTurns > 0);
+};
+
 const marketMatchesHeldAsset = (event: MarketEvent, assets: Asset[]): boolean => {
   const effect = event.effect;
   if (!effect || assets.length === 0) {
@@ -74,6 +78,8 @@ const marketMatchesHeldAsset = (event: MarketEvent, assets: Asset[]): boolean =>
     effect.targetTag,
     effect.targetName,
     ...(effect.assetTags || []),
+    ...(effect.positiveTags || []),
+    ...(effect.negativeTags || []),
   ].map(normalize).filter(Boolean);
 
   if (targets.length === 0) {
@@ -118,18 +124,20 @@ export const getPacingWeights = (state: GameState): PacingWeights => {
   const recentDoodad = hasRecentLog(state, ['支出「'], 3);
   const recentAssetBuy = hasRecentLog(state, ['买入「'], 3);
   const hasStock = (state.assets || []).some(isStockAsset);
+  const isFindingOpportunity = hasActiveOperation(state, 'find_opportunity');
+  const isResearchingMarket = hasActiveOperation(state, 'market_research');
 
   const earlyGame = actionStep < 8 || assetCount === 0;
   const cashPressure = cash < 1500 || passiveWeeklyIncome < 0;
   const readyForBigDeal = state.track === 'fast_track' || cash >= 10000 || passiveWeeklyIncome >= 800;
 
   return {
-    smallDeal: earlyGame ? 9 : readyForBigDeal ? 4 : 7,
-    bigDeal: readyForBigDeal ? 6 : 1,
-    incomeAsset: cashPressure ? 8 : 5,
+    smallDeal: (earlyGame ? 9 : readyForBigDeal ? 4 : 7) * (isFindingOpportunity ? 1.35 : 1),
+    bigDeal: (readyForBigDeal ? 6 : 1) * (isFindingOpportunity ? 1.15 : 1),
+    incomeAsset: (cashPressure ? 8 : 5) * (isFindingOpportunity ? 1.25 : 1),
     growthAsset: recentMarket ? 3 : 5,
     stock: hasStock || recentMarket ? 7 : earlyGame ? 4 : 5,
-    market: hasStock || assetCount >= 2 ? 7 : recentAssetBuy ? 4 : 2,
+    market: (hasStock || assetCount >= 2 ? 7 : recentAssetBuy ? 4 : 2) * (isResearchingMarket ? 1.5 : 1),
     doodad: cashPressure || recentDoodad ? 1 : 4,
   };
 };
@@ -160,10 +168,13 @@ export const selectPacedSmallDealCard = (
     const incomeWeight = card.monthlyIncome > 0 ? weights.incomeAsset : weights.growthAsset;
     const stockWeight = isStockCard(card) ? weights.stock : 1;
     const earlyCashflowBoost = (state.assets?.length || 0) < 2 && card.monthlyIncome > 0 ? 2 : 1;
+    const businessBoost = hasActiveOperation(state, 'find_opportunity') && (card.category === 'business' || (card.tags || []).some(tag => normalize(tag) === 'business'))
+      ? 1.8
+      : 1;
 
     return {
       item: card,
-      weight: Math.max(0.1, affordableWeight * incomeWeight * stockWeight * earlyCashflowBoost),
+      weight: Math.max(0.1, affordableWeight * incomeWeight * stockWeight * earlyCashflowBoost * businessBoost),
     };
   }), random) || fallback;
 };
@@ -180,10 +191,13 @@ export const selectPacedBigDealCard = (
     const affordability = getDealAffordability(state, safeNum(card.downPayment));
     const affordableWeight = affordability === 'affordable' ? 8 : affordability === 'stretch' ? 3 : 0.2;
     const incomeWeight = card.monthlyIncome > 0 ? weights.incomeAsset : weights.growthAsset;
+    const businessBoost = hasActiveOperation(state, 'find_opportunity') && (card.category === 'business' || (card.tags || []).some(tag => normalize(tag) === 'business'))
+      ? 1.5
+      : 1;
 
     return {
       item: card,
-      weight: Math.max(0.1, affordableWeight * incomeWeight),
+      weight: Math.max(0.1, affordableWeight * incomeWeight * businessBoost),
     };
   }), random) || fallback;
 };
@@ -226,7 +240,8 @@ export const selectPacedMarketEvent = (
     const isStockEvent = event.type === 'stock_surge' || event.type === 'stock_crash';
     const isMacroEvent = event.type === 'inflation' || event.type === 'global_macro';
     const isPositiveLiquidityEvent = event.allowSelling && matchesHeldAsset;
-    const usefulMarketWeight = isPositiveLiquidityEvent ? 10 : hasAssets ? 3 : 0.5;
+    const researchBoost = hasActiveOperation(state, 'market_research') && matchesHeldAsset ? 2.5 : 1;
+    const usefulMarketWeight = (isPositiveLiquidityEvent ? 10 : hasAssets ? 3 : 0.5) * researchBoost;
     const stockEventWeight = isStockEvent ? (hasStocks ? weights.market + 4 : 1) : 1;
     const macroPenalty = isMacroEvent && getAvailableCash(state) < 1500 ? 0.35 : 1;
 

@@ -1,4 +1,5 @@
 import { GameState, GameSpace, Asset, ActionLogEntry, StockPrice, BankruptcyLiquidationEntry } from './gameTypes';
+import type { OperationActionId, OperationEffect } from './gameTypes';
 import { getRandomProfession, getTotalExpenses, Profession } from '../config/professions';
 import { SmallDealCard, BigDealCard, smallDealCards, bigDealCards, doodadCards } from '../config/cards';
 import { Dream } from '../config/dreams';
@@ -12,6 +13,13 @@ import {
   selectPacedMarketEvent,
   selectPacedSmallDealCard,
 } from './gamePacing';
+import {
+  advanceOperationEffectsAfterRoll,
+  applyOperationActionState,
+  consumeFirstOperationEffect,
+  getAssetCashflowMultiplier,
+  getFirstOperationEffect,
+} from './operationActions';
 
 export const MAX_LOAN_MULTIPLIER = 10;
 const STOCK_SYMBOLS = ['MYT4U', 'OK4U', 'MYJT', 'Stock'];
@@ -111,6 +119,7 @@ export const initialState = (profession: Profession | null = null, dream: Dream 
     inflationMultiplier: 1.0,
     mortgageMultiplier: 1.0,
     marketPrices: [...DEFAULT_STOCK_PRICES],
+    operationEffects: [],
     bankruptcyLiquidation: [],
     actionLog: [],
     actionStep: 0,
@@ -136,6 +145,20 @@ const isStockLike = (item: Pick<Asset, 'category' | 'tags' | 'name'>): boolean =
   return normalizeKey(item.category) === 'stock' ||
     (item.tags || []).some(tag => normalizeKey(tag) === 'stock' || STOCK_SYMBOLS.some(symbol => normalizeKey(tag) === normalizeKey(symbol))) ||
     STOCK_SYMBOLS.some(symbol => normalizeKey(item.name).includes(normalizeKey(symbol)));
+};
+
+const assetMatchesTags = (asset: Pick<Asset, 'category' | 'tags' | 'name' | 'subtype' | 'symbol'>, tags: string[] = []): boolean => {
+  if (tags.length === 0) {
+    return true;
+  }
+
+  const candidates = [asset.category, asset.subtype, asset.symbol, asset.name, ...(asset.tags || [])]
+    .map(normalizeKey)
+    .filter(Boolean);
+
+  return tags.map(normalizeKey).some(tag =>
+    candidates.some(candidate => candidate === tag || candidate.includes(tag) || tag.includes(candidate))
+  );
 };
 
 const findStockPriceEntry = (state: GameState, stockSymbol: string, tags: string[] = [], name: string = ''): StockPrice | undefined => {
@@ -173,7 +196,7 @@ const addLog = (
   
   // 简单计算被动收入，避免递归
   const passiveIncome = (state.assets || []).reduce((sum, asset) => {
-    return sum + safeNum(asset?.weeklyIncome, 0);
+    return sum + safeNum(asset?.weeklyIncome, 0) * getAssetCashflowMultiplier(state, asset);
   }, 0);
   
   const salary = safeNum(safeProfessionData.salary);
@@ -198,7 +221,7 @@ export const calculateFinancials = (state: GameState) => {
   const safeMortgageMultiplier = safeNum(state.mortgageMultiplier, 1.0) || 1.0;
 
   const passiveIncome = (state.assets || []).reduce((sum, asset) => {
-    return sum + safeNum(asset?.weeklyIncome, 0);
+    return sum + safeNum(asset?.weeklyIncome, 0) * getAssetCashflowMultiplier(state, asset);
   }, 0);
 
   const loanInterest = (state.loans || []).reduce((sum, loan) => {
@@ -282,6 +305,26 @@ export const handlePayday = (state: GameState): GameState => {
   };
 };
 
+export const selectOperationAction = (
+  state: GameState,
+  actionId: OperationActionId,
+  targetAssetId?: string,
+): GameState => {
+  const result = applyOperationActionState(state, actionId, targetAssetId);
+  if (!result.applied) {
+    return state;
+  }
+
+  const logType = result.cashChange < 0 ? 'negative' : 'neutral';
+  const logEntry = addLog(state, result.message, result.cashChange, logType);
+
+  return {
+    ...result.state,
+    actionLog: [...(state.actionLog || []), logEntry],
+    actionStep: (state.actionStep || 0) + 1,
+  };
+};
+
 export const canTakeLoan = (state: GameState, amount: number): { canTake: boolean; reason?: string } => {
   if (amount % 1000 !== 0 || amount <= 0) {
     return { canTake: false, reason: '贷款金额必须是$1000的倍数' };
@@ -302,7 +345,9 @@ export const canTakeLoan = (state: GameState, amount: number): { canTake: boolea
     };
   }
 
-  const newLoanInterest = (amount * 0.1) / 4;
+  const loanTermsEffect = getFirstOperationEffect(state, 'market_loan_terms');
+  const interestModifier = loanTermsEffect?.amountModifier || 1;
+  const newLoanInterest = (amount * 0.1 * interestModifier) / 4;
   const futureWeeklyFlow = weeklyCashFlow - newLoanInterest;
 
   if (futureWeeklyFlow < 0) {
@@ -318,22 +363,27 @@ export const takeLoan = (state: GameState, amount: number): GameState => {
     return state;
   }
 
+  const loanTermsEffect = getFirstOperationEffect(state, 'market_loan_terms');
+  const interestModifier = loanTermsEffect?.amountModifier || 1;
+  const nextState = loanTermsEffect ? consumeFirstOperationEffect(state, 'market_loan_terms') : state;
+
   const newLoan = {
     id: `loan_${Date.now()}`,
     amount: amount,
-    weeklyInterest: (amount * 0.1) / 4,
+    weeklyInterest: (amount * 0.1 * interestModifier) / 4,
     takenDate: new Date().toISOString(),
   };
 
-  const logEntry = addLog(state, `银行贷款 $${amount.toLocaleString()}，月利息 $${(amount * 0.1).toLocaleString()}`, amount, 'neutral');
+  const loanTermsText = loanTermsEffect ? `（${loanTermsEffect.source || '信贷宽松'}已降低利息）` : '';
+  const logEntry = addLog(nextState, `银行贷款 $${amount.toLocaleString()}，月利息 $${(amount * 0.1 * interestModifier).toLocaleString()}${loanTermsText}`, amount, 'neutral');
 
   return {
-    ...state,
-    assets: [...state.assets],
-    cash: state.cash + amount,
-    loans: [...state.loans, newLoan],
-    actionLog: [...(state.actionLog || []), logEntry],
-    actionStep: (state.actionStep || 0) + 1,
+    ...nextState,
+    assets: [...nextState.assets],
+    cash: nextState.cash + amount,
+    loans: [...nextState.loans, newLoan],
+    actionLog: [...(nextState.actionLog || []), logEntry],
+    actionStep: (nextState.actionStep || 0) + 1,
   };
 };
 
@@ -358,11 +408,25 @@ export const repayLoan = (state: GameState, loanId: string): GameState => {
 export const handleBankruptcy = (state: GameState): GameState => {
   let currentCash = safeNum(state.cash);
   let remainingAssets = [...(state.assets || [])];
+  let operationEffects = [...(state.operationEffects || [])];
   const logs: ActionLogEntry[] = [];
   const liquidation: BankruptcyLiquidationEntry[] = [];
 
   if (currentCash >= 0) {
     return { ...state, bankruptcyLiquidation: [] };
+  }
+
+  const insuranceEffect = getFirstOperationEffect(state, 'insurance');
+  if (insuranceEffect?.amountModifier) {
+    const coverage = Math.round(Math.abs(currentCash) * (1 - insuranceEffect.amountModifier));
+    currentCash += coverage;
+    operationEffects = consumeFirstOperationEffect(state, 'insurance').operationEffects;
+    logs.push(addLog(
+      state,
+      `保险理赔：破产现金缺口减少 $${coverage.toLocaleString()}`,
+      coverage,
+      'positive'
+    ));
   }
 
   const getLiquidationValue = (asset: Asset) => calculateSalePrice(asset, state, state.currentEvent || {});
@@ -460,6 +524,7 @@ export const handleBankruptcy = (state: GameState): GameState => {
     ...state,
     cash: currentCash,
     assets: remainingAssets,
+    operationEffects,
     bankruptcyLiquidation: liquidation,
     actionLog: [...(state.actionLog || []), ...logs],
     actionStep: (state.actionStep || 0) + logs.length,
@@ -494,6 +559,8 @@ export const rollDice = (state: GameState, diceCount: number = 1): GameState => 
       canRoll: remaining > 0 ? false : true,
       actionLog: [...(state.actionLog || []), logEntry],
       actionStep: (state.actionStep || 0) + 1,
+      operationEffects: advanceOperationEffectsAfterRoll(state.operationEffects || []),
+      selectedOperation: undefined,
       status: {
         ...state.status,
         downsizedTurnsRemaining: remaining,
@@ -519,6 +586,8 @@ export const rollDice = (state: GameState, diceCount: number = 1): GameState => 
     inflationMultiplier: state.inflationMultiplier ?? 1.0,
     mortgageMultiplier: state.mortgageMultiplier ?? 1.0,
     marketPrices: state.marketPrices || [...DEFAULT_STOCK_PRICES],
+    operationEffects: state.operationEffects || [],
+    selectedOperation: undefined,
     actionLog: state.actionLog || [],
     actionStep: (state.actionStep || 0) + 1,
     currentPosition: newPosition,
@@ -659,7 +728,11 @@ case 'Market': {
       break;
   }
 
-  return newState;
+  return {
+    ...newState,
+    operationEffects: advanceOperationEffectsAfterRoll(newState.operationEffects || []),
+    selectedOperation: undefined,
+  };
 };
 
 export const canBuyOpportunity = (state: GameState): boolean => {
@@ -673,6 +746,7 @@ export const canBuyOpportunity = (state: GameState): boolean => {
 };
 
 export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCard): GameState => {
+  let purchaseState = state;
   const safeCash = safeNum(state.cash);
   const { isOverLeveraged } = calculateFinancials(state);
   if (isOverLeveraged) {
@@ -684,7 +758,30 @@ export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCa
   const stockSymbol = getStockSymbol(card.tags, card.name);
   const stockPrice = isStock ? getCurrentStockPrice(state, stockSymbol, card.tags, card.name) : 0;
   const stockShares = isStock ? Math.max(1, Math.floor(safeNum(stockData?.shares, 1))) : 0;
-  const safeDownPayment = isStock ? Math.round(stockShares * stockPrice) : safeNum(card.downPayment);
+  let downPaymentModifier = 1;
+  const discountNotes: string[] = [];
+
+  if (!isStock) {
+    const negotiationEffect = getFirstOperationEffect(state, 'down_payment_negotiation');
+    if (negotiationEffect?.amountModifier) {
+      downPaymentModifier *= negotiationEffect.amountModifier;
+      discountNotes.push('谈判首付');
+      purchaseState = consumeFirstOperationEffect(purchaseState, 'down_payment_negotiation');
+    }
+
+    (state.operationEffects || [])
+      .filter(effect => effect.type === 'market_purchase_discount' && effect.amountModifier && assetMatchesTags(card, effect.tags))
+      .forEach(effect => {
+        downPaymentModifier *= safeNum(effect.amountModifier, 1);
+        if (effect.source) {
+          discountNotes.push(effect.source);
+        }
+      });
+  }
+
+  const safeDownPayment = isStock
+    ? Math.round(stockShares * stockPrice)
+    : Math.max(0, Math.round(safeNum(card.downPayment) * downPaymentModifier));
 
   if (safeCash < safeDownPayment) {
     return state;
@@ -710,20 +807,20 @@ export const buyOpportunity = (state: GameState, card: SmallDealCard | BigDealCa
 
   const logMessage = isStock
     ? `买入「${card.name}」${stockShares} 股 @$${stockPrice.toLocaleString()}，共 $${safeDownPayment.toLocaleString()}，月收益 $0`
-    : `买入「${card.name}」首付 $${safeDownPayment.toLocaleString()}，月收益 ${card.monthlyIncome >= 0 ? '+' : ''}$${card.monthlyIncome}`;
-  const logEntry = addLog(state, logMessage, -safeDownPayment, 'negative');
+    : `买入「${card.name}」首付 $${safeDownPayment.toLocaleString()}${discountNotes.length ? `（${discountNotes.join('、')}已生效）` : ''}，月收益 ${card.monthlyIncome >= 0 ? '+' : ''}$${card.monthlyIncome}`;
+  const logEntry = addLog(purchaseState, logMessage, -safeDownPayment, 'negative');
 
   return {
-    ...state,
-    professionData: state.professionData,
-    assets: [...(state.assets || []), newAsset],
-    loans: [...(state.loans || [])],
-    children: state.children ?? 0,
-    inflationMultiplier: state.inflationMultiplier ?? 1.0,
-    mortgageMultiplier: state.mortgageMultiplier ?? 1.0,
-    marketPrices: state.marketPrices || [...DEFAULT_STOCK_PRICES],
-    actionLog: [...(state.actionLog || []), logEntry],
-    actionStep: (state.actionStep || 0) + 1,
+    ...purchaseState,
+    professionData: purchaseState.professionData,
+    assets: [...(purchaseState.assets || []), newAsset],
+    loans: [...(purchaseState.loans || [])],
+    children: purchaseState.children ?? 0,
+    inflationMultiplier: purchaseState.inflationMultiplier ?? 1.0,
+    mortgageMultiplier: purchaseState.mortgageMultiplier ?? 1.0,
+    marketPrices: purchaseState.marketPrices || [...DEFAULT_STOCK_PRICES],
+    actionLog: [...(purchaseState.actionLog || []), logEntry],
+    actionStep: (purchaseState.actionStep || 0) + 1,
     cash: safeCash - safeDownPayment,
     currentEvent: null,
     canRoll: true,
@@ -740,16 +837,22 @@ export const declineOpportunity = (state: GameState): GameState => {
 };
 
 export const payDoodad = (state: GameState, card: any): GameState => {
-  const cost = safeNum(card.cost);
-  const logEntry = addLog(state, `支出「${card.name}」$${cost.toLocaleString()}`, -cost, 'negative');
+  const frugalEffect = getFirstOperationEffect(state, 'frugal_management');
+  const baseCost = safeNum(card.cost);
+  const cost = frugalEffect?.amountModifier
+    ? Math.max(200, Math.round(baseCost * frugalEffect.amountModifier))
+    : baseCost;
+  const nextState = frugalEffect ? consumeFirstOperationEffect(state, 'frugal_management') : state;
+  const discountMessage = frugalEffect ? `（节流管理减少 $${(baseCost - cost).toLocaleString()}）` : '';
+  const logEntry = addLog(nextState, `支出「${card.name}」$${cost.toLocaleString()}${discountMessage}`, -cost, 'negative');
   return {
-    ...state,
-    assets: [...state.assets],
-    cash: state.cash - cost,
+    ...nextState,
+    assets: [...nextState.assets],
+    cash: nextState.cash - cost,
     currentEvent: null,
     canRoll: true,
-    actionLog: [...(state.actionLog || []), logEntry],
-    actionStep: (state.actionStep || 0) + 1,
+    actionLog: [...(nextState.actionLog || []), logEntry],
+    actionStep: (nextState.actionStep || 0) + 1,
   };
 };
 
@@ -816,7 +919,10 @@ export const shouldTriggerUnemployment = (state: GameState): boolean => {
 
 export const handleDownsized = (state: GameState): GameState => {
   const safeCash = safeNum(state.cash);
-  const cashPenalty = Math.floor(Math.max(0, safeCash) * 0.1);
+  const insuranceEffect = getFirstOperationEffect(state, 'insurance');
+  const penaltyMultiplier = insuranceEffect?.amountModifier || 1;
+  const cashPenalty = Math.floor(Math.max(0, safeCash) * 0.1 * penaltyMultiplier);
+  const nextState = insuranceEffect ? consumeFirstOperationEffect(state, 'insurance') : state;
 
   const skipTurns = state.isMultiplayer ? 2 : 0;
   const unemploymentPaydayCount = state.isMultiplayer ? 0 : 2;
@@ -835,18 +941,19 @@ export const handleDownsized = (state: GameState): GameState => {
   const riskReport = system.getRiskReport(state);
   const riskPercentage = Math.round(riskReport.currentRisk * 100);
 
-  const logEntry = addLog(state, `失业！扣除 10% 现金 $${cashPenalty.toLocaleString()}，停薪 ${unemploymentPaydayCount || unemploymentCount} 次（当前失业风险：${riskPercentage}%）`, -cashPenalty, 'negative');
+  const insuranceText = insuranceEffect ? '，保险已降低损失' : '';
+  const logEntry = addLog(nextState, `失业！扣除 10% 现金 $${cashPenalty.toLocaleString()}${insuranceText}，停薪 ${unemploymentPaydayCount || unemploymentCount} 次（当前失业风险：${riskPercentage}%）`, -cashPenalty, 'negative');
 
   return {
-    ...state,
-    professionData: state.professionData,
-    assets: [...(state.assets || [])],
-    loans: [...(state.loans || [])],
-    children: state.children ?? 0,
-    inflationMultiplier: state.inflationMultiplier ?? 1.0,
-    marketPrices: state.marketPrices || [...DEFAULT_STOCK_PRICES],
-    actionLog: [...(state.actionLog || []), logEntry],
-    actionStep: (state.actionStep || 0) + 1,
+    ...nextState,
+    professionData: nextState.professionData,
+    assets: [...(nextState.assets || [])],
+    loans: [...(nextState.loans || [])],
+    children: nextState.children ?? 0,
+    inflationMultiplier: nextState.inflationMultiplier ?? 1.0,
+    marketPrices: nextState.marketPrices || [...DEFAULT_STOCK_PRICES],
+    actionLog: [...(nextState.actionLog || []), logEntry],
+    actionStep: (nextState.actionStep || 0) + 1,
     cash: safeCash - cashPenalty,
     status: {
       ...state.status,
@@ -1003,6 +1110,30 @@ export const getOpportunityStockPrice = (state: GameState, card: SmallDealCard |
   return getCurrentStockPrice(state, stockSymbol, card.tags, card.name);
 };
 
+export const getOpportunityDownPayment = (state: GameState, card: SmallDealCard | BigDealCard): number => {
+  if (isStockLike(card)) {
+    const stockData = (card as SmallDealCard).stockData;
+    const stockSymbol = getStockSymbol(card.tags, card.name);
+    const stockPrice = getCurrentStockPrice(state, stockSymbol, card.tags, card.name);
+    const stockShares = Math.max(1, Math.floor(safeNum(stockData?.shares, 1)));
+    return Math.round(stockShares * stockPrice);
+  }
+
+  let modifier = 1;
+  const negotiationEffect = getFirstOperationEffect(state, 'down_payment_negotiation');
+  if (negotiationEffect?.amountModifier) {
+    modifier *= negotiationEffect.amountModifier;
+  }
+
+  (state.operationEffects || [])
+    .filter(effect => effect.type === 'market_purchase_discount' && effect.amountModifier && assetMatchesTags(card, effect.tags))
+    .forEach(effect => {
+      modifier *= safeNum(effect.amountModifier, 1);
+    });
+
+  return Math.max(0, Math.round(safeNum(card.downPayment) * modifier));
+};
+
 export const updateMarketPrices = (
   state: GameState, 
   tags: string[], 
@@ -1126,6 +1257,7 @@ export const handleMarketEvent = (state: GameState, soldAssetId?: string, salePr
   let newCash = safeCash;
   let newAssets = [...(state.assets || [])];
   let newMortgageMultiplier = safeNum(state.mortgageMultiplier, 1.0) || 1.0;
+  let newOperationEffects = [...(state.operationEffects || [])];
   const newLogEntries: ActionLogEntry[] = [];
 
   // 1. 处理手动出售资产
@@ -1181,12 +1313,96 @@ export const handleMarketEvent = (state: GameState, soldAssetId?: string, salePr
       newLogEntries.push(addLog(state, '通货膨胀：月支出增加 10%', 0, 'negative'));
     }
 
+  if (marketEvent?.effect) {
+    const effect = marketEvent.effect;
+    const durationTurns = Math.max(1, safeNum(effect.durationTurns, 1));
+    const source = marketEvent.name;
+    const effectTags = effect.assetTags || [];
+    const matchingAssets = newAssets.filter(asset => assetMatchesTags(asset, effectTags));
+
+    const pushCashflowEffect = (tags: string[], multiplier: number, effectSource: string) => {
+      if (!Number.isFinite(multiplier) || multiplier === 1) {
+        return;
+      }
+
+      const operationEffect: OperationEffect = {
+        id: `market_${marketEvent.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        type: 'market_cashflow',
+        remainingTurns: durationTurns,
+        cashflowMultiplier: multiplier,
+        tags,
+        source: effectSource,
+      };
+      newOperationEffects.push(operationEffect);
+      const direction = multiplier > 1 ? '提高' : '降低';
+      newLogEntries.push(addLog(
+        state,
+        `市场影响：${effectSource} 使匹配资产现金流${direction} ${Math.round(Math.abs(multiplier - 1) * 100)}%，持续 ${durationTurns} 回合`,
+        0,
+        multiplier > 1 ? 'positive' : 'negative'
+      ));
+    };
+
+    if (effect.positiveTags?.length || effect.negativeTags?.length) {
+      pushCashflowEffect(effect.positiveTags || [], safeNum(effect.incomeMultiplier, 1), `${source}（利好）`);
+      pushCashflowEffect(effect.negativeTags || [], safeNum(effect.negativeIncomeMultiplier, 1), `${source}（压力）`);
+    } else {
+      pushCashflowEffect(effectTags, safeNum(effect.incomeMultiplier, 1), source);
+    }
+
+    if (effect.purchaseDiscount && effectTags.length > 0) {
+      newOperationEffects.push({
+        id: `market_discount_${marketEvent.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        type: 'market_purchase_discount',
+        remainingTurns: durationTurns,
+        amountModifier: Math.max(0, 1 - safeNum(effect.purchaseDiscount, 0)),
+        tags: effectTags,
+        source,
+      });
+      newLogEntries.push(addLog(
+        state,
+        `市场机会：${source}，新买入匹配资产首付降低 ${Math.round(safeNum(effect.purchaseDiscount, 0) * 100)}%，持续 ${durationTurns} 回合`,
+        0,
+        'positive'
+      ));
+    }
+
+    if (effect.loanInterestModifier) {
+      newOperationEffects.push({
+        id: `market_loan_${marketEvent.id}_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        type: 'market_loan_terms',
+        remainingTurns: durationTurns,
+        amountModifier: safeNum(effect.loanInterestModifier, 1),
+        tags: effectTags,
+        source,
+      });
+      newLogEntries.push(addLog(
+        state,
+        `市场机会：${source}，下一次贷款月利息倍率 ×${safeNum(effect.loanInterestModifier, 1)}，持续 ${durationTurns} 回合`,
+        0,
+        'positive'
+      ));
+    }
+
+    if (effect.oneTimeCost && matchingAssets.length > 0) {
+      const totalCost = Math.round(safeNum(effect.oneTimeCost) * matchingAssets.length);
+      newCash -= totalCost;
+      newLogEntries.push(addLog(
+        state,
+        `市场压力：${source}，${matchingAssets.length} 个匹配资产产生一次性支出 $${totalCost.toLocaleString()}`,
+        -totalCost,
+        'negative'
+      ));
+    }
+  }
+
     return {
       ...state,
       assets: newAssets,
       cash: newCash,
       inflationMultiplier: newInflation,
       mortgageMultiplier: newMortgageMultiplier,
+      operationEffects: newOperationEffects,
       marketPrices: state.marketPrices || [...DEFAULT_STOCK_PRICES],
       currentEvent: null,
       canRoll: true,

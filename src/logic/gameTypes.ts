@@ -87,6 +87,25 @@ export interface BankruptcyNotice {
   remainingCash: number;
 }
 
+export type OperationActionId =
+  | 'find_opportunity'
+  | 'market_research'
+  | 'frugal_management'
+  | 'down_payment_negotiation'
+  | 'asset_management'
+  | 'insurance';
+
+export interface OperationEffect {
+  id: string;
+  type: OperationActionId | 'market_cashflow' | 'market_purchase_discount' | 'market_loan_terms';
+  targetAssetId?: string;
+  remainingTurns: number;
+  amountModifier?: number;
+  cashflowMultiplier?: number;
+  tags?: string[];
+  source?: string;
+}
+
 export interface GameState {
   track: GameTrack;
   profession: string;
@@ -108,6 +127,8 @@ export interface GameState {
   inflationMultiplier: number;
   mortgageMultiplier: number; // 去掉可选，强制初始化
   marketPrices: StockPrice[];
+  operationEffects: OperationEffect[];
+  selectedOperation?: OperationActionId;
   bankruptcyLiquidation?: BankruptcyLiquidationEntry[];
   actionLog: ActionLogEntry[];
   actionStep: number;

@@ -23,12 +23,15 @@ import {
   calculateSalePrice,
   getMarketPrice,
   getOpportunityStockPrice,
+  getOpportunityDownPayment,
   buyStockShares,
   sellStockShares,
   canBuyOpportunity,
+  selectOperationAction,
   MAX_LOAN_MULTIPLIER,
 } from './logic/gameLogic';
 import { GameState, Asset, SmallDealCard, BigDealCard, MarketEvent, ActionLogEntry } from './logic/gameTypes';
+import type { OperationActionId } from './logic/gameTypes';
 import { professions } from './config/professions';
 import { dreams } from './config/dreams';
 import {
@@ -46,8 +49,6 @@ import {
   ShoppingCart,
   BarChart2,
   ScrollText,
-  ChevronDown,
-  ChevronUp,
 } from 'lucide-react';
 import { useGameRoom } from './hooks/useGameRoom';
 import { SmartPanelToggle, SimpleSmartIndicator } from './components/SmartPanelToggle';
@@ -60,6 +61,11 @@ import { TradeRecapPanel, type TradeRecapItem } from './components/TradeRecapPan
 import { MarketHistoryPanel } from './components/MarketHistoryPanel';
 import { RiskHintPanel, type RiskHint as RiskHintPanelItem } from './components/RiskHintPanel';
 import { GameSummaryPanel, type GameSummaryHighlight, type GameSummaryMetric } from './components/GameSummaryPanel';
+import { OperationActionPanel } from './components/OperationActionPanel';
+import { GameStatusBar } from './components/GameStatusBar';
+import { BoardStage } from './components/BoardStage';
+import { BottomActionBar } from './components/BottomActionBar';
+import { BottomSheet } from './components/BottomSheet';
 import {
   formatMarketHistoryInput,
   getGameSummary,
@@ -72,6 +78,48 @@ import {
 const formatMoney = (value: number, signed = false) => {
   const prefix = signed && value > 0 ? '+' : '';
   return `${prefix}$${Math.round(value).toLocaleString()}`;
+};
+
+const formatPercentChange = (multiplier: number) => {
+  const percent = Math.round((multiplier - 1) * 100);
+  return `${percent > 0 ? '+' : ''}${percent}%`;
+};
+
+const getMarketEffectLines = (event: MarketEvent): string[] => {
+  const effect = event.effect;
+  if (!effect) return [];
+
+  const lines: string[] = [];
+  const tags = effect.assetTags || [];
+  const tagText = tags.length ? `影响标签：${tags.join('、')}` : '';
+
+  if (effect.incomeMultiplier && effect.incomeMultiplier !== 1) {
+    const positiveText = effect.positiveTags?.length ? `利好标签：${effect.positiveTags.join('、')}` : tagText || '匹配资产';
+    lines.push(`${positiveText} 现金流 ${formatPercentChange(effect.incomeMultiplier)}，持续 ${effect.durationTurns || 1} 回合`);
+  }
+
+  if (effect.negativeIncomeMultiplier && effect.negativeIncomeMultiplier !== 1) {
+    const negativeTags = effect.negativeTags?.length ? effect.negativeTags.join('、') : '压力资产';
+    lines.push(`${negativeTags} 现金流 ${formatPercentChange(effect.negativeIncomeMultiplier)}，持续 ${effect.durationTurns || 1} 回合`);
+  }
+
+  if (effect.priceMultiplier && effect.priceMultiplier !== 1) {
+    lines.push(`出售估值 ×${effect.priceMultiplier}`);
+  }
+
+  if (effect.purchaseDiscount) {
+    lines.push(`新买入匹配资产首付 -${Math.round(effect.purchaseDiscount * 100)}%，持续 ${effect.durationTurns || 1} 回合`);
+  }
+
+  if (effect.oneTimeCost) {
+    lines.push(`匹配持仓可能产生一次性支出 $${effect.oneTimeCost.toLocaleString()}/项`);
+  }
+
+  if (effect.loanInterestModifier) {
+    lines.push(`融资条件改善：贷款利息倍率 ×${effect.loanInterestModifier}`);
+  }
+
+  return lines;
 };
 
 function App() {
@@ -91,7 +139,9 @@ function App() {
   const [opportunityLoanAmount, setOpportunityLoanAmount] = useState<string>('');
   const [showActionLog, setShowActionLog] = useState(false);
   const [showFullLog, setShowFullLog] = useState(false);
-  const [showFinancialDrawer, setShowFinancialDrawer] = useState(false);
+  const [showOperationsSheet, setShowOperationsSheet] = useState(false);
+  const [showAssetDrawer, setShowAssetDrawer] = useState(false);
+  const [showInfoDrawer, setShowInfoDrawer] = useState(false);
 
   // Stock trading state — only used inside modals
   const [stockBuyQty, setStockBuyQty] = useState<string>('');
@@ -170,6 +220,10 @@ function App() {
         id: entry.id,
         kind: entry.kind === 'stock' || entry.kind === 'asset'
           ? entry.direction
+          : entry.kind === 'operation'
+            ? 'operation'
+            : entry.kind === 'market'
+              ? 'market'
           : entry.kind === 'loan'
             ? 'buy'
             : 'dividend',
@@ -262,6 +316,14 @@ function App() {
     if (!newState.currentEvent && !newState.currentSpecialEvent) {
       gameRoom.endTurn();
     }
+  };
+
+  const onSelectOperationAction = (actionId: OperationActionId, targetAssetId?: string) => {
+    if (!gameState || !canRollDice) return;
+    const newState = selectOperationAction(gameState, actionId, targetAssetId);
+    setGameState(newState);
+    gameRoom.broadcastGameState(newState);
+    setShowOperationsSheet(false);
   };
 
   const onEscapeRatRace = () => {
@@ -534,6 +596,9 @@ function App() {
   const stockBuyTotal = stockBuyQtyNum * stockCardPrice;
   const stockMaxBuyable = stockCardPrice > 0 ? Math.floor(gameState.cash / stockCardPrice) : 0;
   const stockBuyInvalid = stockBuyQtyNum <= 0 || stockBuyTotal > gameState.cash;
+  const opportunityDownPayment = currentCard && !isStockOpportunity
+    ? getOpportunityDownPayment(gameState, currentCard)
+    : currentCard?.downPayment || 0;
   const bankruptcyNotice = (() => {
     const stateWithNotice = gameState as GameState & {
       bankruptcyNotice?: BankruptcyNoticeData;
@@ -558,13 +623,45 @@ function App() {
   })();
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-50 to-slate-100 pb-24 md:pb-8">
+    <div className="min-h-screen bg-slate-100">
       {/* 智能面板切换按钮 */}
       <SmartPanelToggle gameState={gameState} />
       {/* 简化版智能指示器 */}
       {gameState && <SimpleSmartIndicator gameState={gameState} />}
+
+      <GameStatusBar
+        gameState={gameState}
+        financials={financials}
+        leverageBlocked={leverageBlocked}
+        roomId={gameRoom.roomId}
+        isMyTurn={gameRoom.isMyTurn}
+        currentTurnPlayerId={gameRoom.currentTurnPlayerId}
+        onOpenLog={() => setShowActionLog(true)}
+      />
+
+      <BoardStage
+        gameState={gameState}
+        getSpaceColor={getSpaceColor}
+        getSpaceLabel={getSpaceLabel}
+      />
+
+      <BottomActionBar
+        canRollDice={canRollDice}
+        diceToRoll={diceToRoll}
+        canEscape={canEscape}
+        track={gameState.track}
+        assetCount={gameState.assets.length}
+        loanCount={gameState.loans.length}
+        onRollDice={onRollDice}
+        onEscapeRatRace={onEscapeRatRace}
+        onOpenOperations={() => setShowOperationsSheet(true)}
+        onOpenAssets={() => setShowAssetDrawer(true)}
+        onOpenLoan={() => setShowLoanDialog(true)}
+        onOpenInfo={() => setShowInfoDrawer(true)}
+        onRestart={() => setShowRestartDialog(true)}
+      />
       
-      <div className="max-w-7xl mx-auto p-4 md:p-8">
+      <div className="hidden max-w-7xl mx-auto p-4 md:p-8">
         <div className="flex justify-between items-center mb-6">
           <div>
             <h1 className="text-2xl md:text-4xl font-bold text-slate-800">现金流游戏</h1>
@@ -766,6 +863,12 @@ function App() {
                 </div>
               )}
 
+              <OperationActionPanel
+                gameState={gameState}
+                canAct={canRollDice}
+                onSelectAction={onSelectOperationAction}
+              />
+
               <button
                 onClick={() => onRollDice(diceToRoll)}
                 disabled={!canRollDice}
@@ -852,6 +955,123 @@ function App() {
         </div>
       </div>
 
+      <BottomSheet
+        isOpen={showOperationsSheet}
+        title="经营动作"
+        onClose={() => setShowOperationsSheet(false)}
+        maxWidth="max-w-xl"
+      >
+        <OperationActionPanel
+          gameState={gameState}
+          canAct={canRollDice}
+          onSelectAction={onSelectOperationAction}
+        />
+      </BottomSheet>
+
+      <BottomSheet
+        isOpen={showAssetDrawer}
+        title="资产与贷款"
+        onClose={() => setShowAssetDrawer(false)}
+        maxWidth="max-w-3xl"
+      >
+        <div className="mb-4 rounded-2xl border border-cyan-100 bg-cyan-50 p-4">
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-sm font-bold text-slate-800">财富自由监控</h3>
+            <span className={`rounded-full px-2 py-1 text-xs font-bold ${financials.passiveIncome > financials.totalExpenses ? 'bg-emerald-100 text-emerald-700' : 'bg-white text-cyan-700'}`}>
+              {financials.totalExpenses > 0 ? Math.round((financials.passiveIncome / financials.totalExpenses) * 100) : 0}%
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 text-sm">
+            <div className="rounded-xl bg-white px-3 py-2">
+              <div className="text-xs text-slate-500">月被动收入</div>
+              <div className="font-bold text-amber-700">${(financials.passiveIncome * 4).toLocaleString()}</div>
+            </div>
+            <div className="rounded-xl bg-white px-3 py-2">
+              <div className="text-xs text-slate-500">月支出</div>
+              <div className="font-bold text-red-700">${financials.monthlyTotalExpenses.toLocaleString()}</div>
+            </div>
+          </div>
+          <p className="mt-2 text-xs leading-relaxed text-slate-600">
+            {financials.passiveIncome > financials.totalExpenses
+              ? '被动收入已经覆盖总支出，可以进入快车道。'
+              : `距离财富自由还差 $${Math.max(0, financials.monthlyTotalExpenses - financials.passiveIncome * 4).toLocaleString()}/月，被动收入需要继续增长。`}
+          </p>
+        </div>
+
+        {gameState.assets.length > 0 ? (
+          <AssetSummaryPanel gameState={gameState} />
+        ) : (
+          <div className="rounded-2xl border border-dashed border-slate-200 bg-slate-50 px-4 py-8 text-center text-sm text-slate-500">
+            当前还没有资产。可以通过机会卡买入股票、生意或房产。
+          </div>
+        )}
+
+        {gameState.loans.length > 0 && (
+          <div className="mt-4 rounded-2xl bg-white p-5 shadow-lg">
+            <h3 className="mb-3 text-base font-semibold text-slate-700">贷款列表</h3>
+            <div className="space-y-2">
+              {gameState.loans.map((loan) => (
+                <div key={loan.id} className="rounded-xl border border-orange-200 bg-orange-50 p-3">
+                  <div className="mb-2 flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-slate-700">本金: ${loan.amount.toLocaleString()}</p>
+                      <p className="text-xs text-slate-500">月利息: ${(loan.weeklyInterest * 4).toLocaleString()}</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onRepayLoan(loan.id)}
+                    disabled={gameState.cash < loan.amount}
+                    className={`w-full rounded-lg px-3 py-2 text-sm font-semibold transition ${gameState.cash >= loan.amount ? 'bg-green-600 text-white hover:bg-green-700' : 'bg-slate-200 text-slate-400'}`}
+                  >
+                    还清贷款
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </BottomSheet>
+
+      <BottomSheet
+        isOpen={showInfoDrawer}
+        title="信息中心"
+        onClose={() => setShowInfoDrawer(false)}
+        maxWidth="max-w-4xl"
+      >
+        <div className="grid gap-4 lg:grid-cols-2">
+          <RiskHintPanel hints={riskPanelItems} />
+          <TradeRecapPanel trades={tradeRecapItems} />
+          <MarketHistoryPanel series={marketHistorySeries} />
+          <div className="rounded-2xl bg-white p-5 shadow-lg">
+            <h3 className="mb-3 flex items-center gap-2 text-base font-semibold text-slate-700">
+              <ScrollText size={18} className="text-slate-500" />
+              操作日志
+            </h3>
+            <div className="space-y-2">
+              {gameState.actionLog.slice(-5).reverse().map(entry => (
+                <div key={entry.id} className="rounded-xl bg-slate-50 p-3 text-xs text-slate-600">
+                  <div className="font-medium text-slate-800">{entry.message}</div>
+                  <div className="mt-1 text-slate-400">第 {entry.step} 步</div>
+                </div>
+              ))}
+              {gameState.actionLog.length === 0 && (
+                <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-center text-sm text-slate-400">
+                  暂无操作日志
+                </div>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => { setShowInfoDrawer(false); setShowFullLog(true); }}
+              className="mt-3 w-full rounded-xl bg-slate-800 px-4 py-3 text-sm font-semibold text-white transition hover:bg-slate-900"
+            >
+              查看完整回溯报告
+            </button>
+          </div>
+        </div>
+      </BottomSheet>
+
       <BankruptcyNotice notice={bankruptcyNotice} onDismiss={dismissBankruptcyNotice} />
 
       {/* Action log panel */}
@@ -876,8 +1096,8 @@ function App() {
 
       {/* Current event modal */}
       {gameState?.currentEvent && !hasWon && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 relative rounded-t-2xl max-h-[90vh] overflow-y-auto">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-0 md:p-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 relative rounded-t-2xl max-h-[86vh] overflow-y-auto">
             <div className="absolute top-4 right-4">
               {(gameState.currentEvent.type === 'SmallDeal' || gameState.currentEvent.type === 'BigDeal') && (
                 <button onClick={onDeclineOpportunity} className="text-slate-400 hover:text-slate-600 transition">
@@ -896,6 +1116,16 @@ function App() {
                   </div>
                   <h3 className="text-xl font-bold text-slate-800 mb-2">{(gameState.currentEvent as MarketEvent).name}</h3>
                   <p className="text-slate-600 text-sm mb-3">{(gameState.currentEvent as MarketEvent).description}</p>
+                  {getMarketEffectLines(gameState.currentEvent as MarketEvent).length > 0 && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <p className="mb-2 text-xs font-semibold text-slate-500">本次影响</p>
+                      <div className="space-y-1">
+                        {getMarketEffectLines(gameState.currentEvent as MarketEvent).map(line => (
+                          <p key={line} className="text-xs leading-relaxed text-slate-700">{line}</p>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* Stock trading window for stock-related market events */}
@@ -1021,14 +1251,14 @@ function App() {
                 {/* Affected assets for non-stock market events */}
                 {(() => {
                   const marketEvent = gameState.currentEvent as MarketEvent;
-                  const affectedAssets = marketEvent.allowSelling ? getAffectedAssets(gameState, marketEvent) : [];
+                  const affectedAssets = getAffectedAssets(gameState, marketEvent);
 
                   if (affectedAssets.length > 0 && gameState.currentEvent.type !== 'stock_surge' && gameState.currentEvent.type !== 'stock_crash' && gameState.currentEvent.type !== 'price_jump') {
                     return (
                       <div className="bg-slate-50 rounded-xl p-4 mb-4 max-h-60 overflow-y-auto">
                         <div className="flex items-center gap-2 mb-3">
                           <ShoppingCart size={16} className="text-slate-600" />
-                          <h4 className="font-semibold text-slate-700 text-sm">可出售资产</h4>
+                          <h4 className="font-semibold text-slate-700 text-sm">{marketEvent.allowSelling ? '可出售资产' : '受影响资产'}</h4>
                         </div>
                         <div className="space-y-3">
                           {affectedAssets.map((asset: Asset) => {
@@ -1040,20 +1270,35 @@ function App() {
                               <div key={asset.id} className="bg-white rounded-xl p-3 border border-slate-200">
                                 <div className="flex justify-between items-start mb-2">
                                   <h5 className="font-semibold text-slate-800 text-sm">{asset.name}</h5>
-                                  <div className={`text-xs font-semibold px-2 py-0.5 rounded-full ${profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
-                                    {profit >= 0 ? '+' : ''}{profitPercent}%
+                                  {marketEvent.allowSelling && (
+                                    <div className={`text-xs font-semibold px-2 py-0.5 rounded-full ${profit >= 0 ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700'}`}>
+                                      {profit >= 0 ? '+' : ''}{profitPercent}%
+                                    </div>
+                                  )}
+                                </div>
+                                {marketEvent.allowSelling ? (
+                                  <div className="grid grid-cols-2 gap-1 text-xs mb-2">
+                                    <div><span className="text-slate-400">原价:</span> <span className="font-medium">${asset.cost.toLocaleString()}</span></div>
+                                    <div><span className="text-slate-400">售价:</span> <span className="font-medium text-green-600">${salePrice.toLocaleString()}</span></div>
                                   </div>
-                                </div>
-                                <div className="grid grid-cols-2 gap-1 text-xs mb-2">
-                                  <div><span className="text-slate-400">原价:</span> <span className="font-medium">${asset.cost.toLocaleString()}</span></div>
-                                  <div><span className="text-slate-400">售价:</span> <span className="font-medium text-green-600">${salePrice.toLocaleString()}</span></div>
-                                </div>
-                                <button
-                                  onClick={() => onSellAsset(asset.id, salePrice)}
-                                  className={`w-full px-3 py-2 rounded-lg font-semibold transition text-sm ${profit >= 0 ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}
-                                >
-                                  卖出 (获得 ${salePrice.toLocaleString()})
-                                </button>
+                                ) : (
+                                  <div className="grid grid-cols-2 gap-1 text-xs mb-2">
+                                    <div><span className="text-slate-400">月现金流:</span> <span className="font-medium">${Math.round(asset.weeklyIncome * 4).toLocaleString()}</span></div>
+                                    <div><span className="text-slate-400">标签:</span> <span className="font-medium">{asset.tags.slice(0, 2).join('、') || asset.category}</span></div>
+                                  </div>
+                                )}
+                                {marketEvent.allowSelling ? (
+                                  <button
+                                    onClick={() => onSellAsset(asset.id, salePrice)}
+                                    className={`w-full px-3 py-2 rounded-lg font-semibold transition text-sm ${profit >= 0 ? 'bg-green-600 hover:bg-green-700 text-white' : 'bg-orange-600 hover:bg-orange-700 text-white'}`}
+                                  >
+                                    卖出 (获得 ${salePrice.toLocaleString()})
+                                  </button>
+                                ) : (
+                                  <p className="rounded-lg bg-blue-50 px-3 py-2 text-xs text-blue-700">
+                                    确认后将按上方市场影响调整现金流或产生支出。
+                                  </p>
+                                )}
                               </div>
                             );
                           })}
@@ -1146,7 +1391,12 @@ function App() {
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">首付款：</span>
-                      <span className="font-semibold text-amber-600">${gameState.currentEvent.downPayment.toLocaleString()}</span>
+                      <span className="font-semibold text-amber-600">
+                        ${opportunityDownPayment.toLocaleString()}
+                        {opportunityDownPayment < gameState.currentEvent.downPayment && (
+                          <span className="ml-2 text-xs text-green-600">已优惠</span>
+                        )}
+                      </span>
                     </div>
                     <div className="flex justify-between border-t pt-2">
                       <span className="text-slate-500">每月收益：</span>
@@ -1163,7 +1413,7 @@ function App() {
                   </div>
                 )}
 
-                {!leverageBlocked && !isStockOpportunity && gameState.cash < gameState.currentEvent.downPayment && (
+                {!leverageBlocked && !isStockOpportunity && gameState.cash < opportunityDownPayment && (
                   <div className="mb-4">
                     <button
                       onClick={() => setShowOpportunityLoanDialog(true)}
@@ -1186,15 +1436,15 @@ function App() {
                     onClick={onBuyOpportunity}
                     disabled={
                       leverageBlocked ||
-                      (isStockOpportunity ? stockBuyInvalid || stockBuyQtyNum <= 0 : gameState.cash < gameState.currentEvent.downPayment)
+                      (isStockOpportunity ? stockBuyInvalid || stockBuyQtyNum <= 0 : gameState.cash < opportunityDownPayment)
                     }
                     className={`flex-1 px-4 py-3 font-semibold rounded-xl transition text-sm ${
-                      !leverageBlocked && (isStockOpportunity ? !stockBuyInvalid && stockBuyQtyNum > 0 : gameState.cash >= gameState.currentEvent.downPayment)
+                      !leverageBlocked && (isStockOpportunity ? !stockBuyInvalid && stockBuyQtyNum > 0 : gameState.cash >= opportunityDownPayment)
                         ? 'bg-green-600 hover:bg-green-700 text-white'
                         : 'bg-gray-200 text-gray-400 cursor-not-allowed'
                     }`}
                   >
-                    {leverageBlocked ? '已超杠杆' : isStockOpportunity ? (stockBuyQtyNum > 0 ? `确认购买 ${stockBuyQtyNum} 股` : '输入买入数量') : gameState.cash >= gameState.currentEvent.downPayment ? '购买' : '资金不足'}
+                    {leverageBlocked ? '已超杠杆' : isStockOpportunity ? (stockBuyQtyNum > 0 ? `确认购买 ${stockBuyQtyNum} 股` : '输入买入数量') : gameState.cash >= opportunityDownPayment ? '购买' : '资金不足'}
                   </button>
                 </div>
               </>
@@ -1227,8 +1477,8 @@ function App() {
 
       {/* Downsized event */}
       {gameState?.currentSpecialEvent === 'downsized' && !hasWon && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-0 md:p-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl max-h-[86vh] overflow-y-auto">
             <div className="inline-block px-3 py-1 bg-red-100 text-red-800 text-sm font-semibold rounded-full mb-3">失业危机</div>
             <h3 className="text-xl font-bold text-slate-800 mb-2">你失业了！</h3>
             <div className="bg-red-50 rounded-xl p-4 mb-4 border border-red-200 text-sm space-y-2">
@@ -1253,8 +1503,8 @@ function App() {
 
       {/* Charity event */}
       {gameState?.currentSpecialEvent === 'charity' && financials && !hasWon && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-0 md:p-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl max-h-[86vh] overflow-y-auto">
             <div className="inline-flex items-center gap-1 px-3 py-1 bg-pink-100 text-pink-800 text-sm font-semibold rounded-full mb-3">
               <Heart size={14} />
               慈善
@@ -1283,8 +1533,8 @@ function App() {
 
       {/* Baby event — info only, no payment */}
       {gameState?.currentSpecialEvent === 'baby' && !hasWon && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-0 md:p-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl max-h-[86vh] overflow-y-auto">
             <div className="inline-flex items-center gap-1 px-3 py-1 bg-sky-100 text-sky-800 text-sm font-semibold rounded-full mb-3">
               <BabyIcon size={14} />
               孩子
@@ -1312,8 +1562,8 @@ function App() {
 
       {/* Dream event */}
       {gameState?.currentSpecialEvent === 'dream' && gameState?.selectedDream && !hasWon && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-0 md:p-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl max-h-[86vh] overflow-y-auto">
             <div className="inline-flex items-center gap-1 px-3 py-1 bg-cyan-100 text-cyan-800 text-sm font-semibold rounded-full mb-3">
               <Star size={14} />
               梦想格
@@ -1454,8 +1704,8 @@ function App() {
 
       {/* Room join dialog */}
       {showRoomDialog && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-end md:items-center justify-center p-0 md:p-4 z-50">
-          <div className="bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl">
+        <div className="fixed inset-x-0 bottom-0 z-50 flex justify-center p-0 md:p-4 pointer-events-none">
+          <div className="pointer-events-auto bg-white w-full md:max-w-md md:rounded-2xl shadow-2xl p-6 rounded-t-2xl max-h-[86vh] overflow-y-auto">
             <div className="flex items-center gap-3 mb-6">
               <LogIn size={28} className="text-blue-600" />
               <h2 className="text-xl font-bold text-slate-800">加入游戏房间</h2>
@@ -1486,50 +1736,6 @@ function App() {
         </div>
       )}
 
-      {/* Mobile financial drawer */}
-      <div className="fixed bottom-0 left-0 right-0 md:hidden bg-white border-t border-slate-200 z-30 shadow-lg">
-        <button
-          onClick={() => setShowFinancialDrawer(!showFinancialDrawer)}
-          className="w-full flex items-center justify-between px-4 py-3"
-        >
-          <div className="flex items-center gap-3">
-            <span className={`text-lg font-bold ${gameState.cash >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              ${gameState.cash.toLocaleString()}
-            </span>
-            <span className={`text-sm ${financials.monthlyCashFlow >= 0 ? 'text-blue-600' : 'text-red-500'}`}>
-              现金流 ${financials.monthlyCashFlow.toLocaleString()}/月
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            {leverageBlocked && <AlertCircle size={18} className="text-red-500" />}
-            {showFinancialDrawer ? <ChevronDown size={20} className="text-slate-400" /> : <ChevronUp size={20} className="text-slate-400" />}
-          </div>
-        </button>
-
-        {showFinancialDrawer && (
-          <div className="px-4 pb-4 space-y-2 bg-white border-t border-slate-100">
-            <div className="grid grid-cols-3 gap-2 text-xs">
-              <div className="bg-slate-50 rounded-lg p-2 text-center">
-                <div className="text-slate-500">工资</div>
-                <div className="font-bold">${(financials.salary * 4).toLocaleString()}</div>
-              </div>
-              <div className={`rounded-lg p-2 text-center ${financials.passiveIncome > 0 ? 'bg-amber-50' : 'bg-slate-50'}`}>
-                <div className="text-slate-500">被动</div>
-                <div className={`font-bold ${financials.passiveIncome > 0 ? 'text-amber-600' : ''}`}>${(financials.passiveIncome * 4).toLocaleString()}</div>
-              </div>
-              <div className="bg-slate-50 rounded-lg p-2 text-center">
-                <div className="text-slate-500">支出</div>
-                <div className="font-bold">${financials.monthlyTotalExpenses.toLocaleString()}</div>
-              </div>
-            </div>
-            {leverageBlocked && (
-              <div className="p-2 bg-red-50 rounded-lg text-xs text-red-700 font-semibold">
-                杠杆超限！已锁定投资购买功能
-              </div>
-            )}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
